@@ -30,7 +30,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -40,7 +40,7 @@ import {
   renameGroup,
   renameScene,
   reorderGroups,
-  reorderScenes,
+  persistSceneContainerOrders,
   updateSceneNadirDisabled,
 } from "@/app/dashboard/tours/[id]/actions";
 import { useSaveStatus } from "@/components/editor/save-status";
@@ -122,6 +122,33 @@ function findSceneContainer(
   return scenes.find((scene) => scene.id === sceneId)?.group_id ?? null;
 }
 
+function resolveOverContainer(
+  overId: UniqueIdentifier,
+  scenes: Scene[],
+): string | null | undefined {
+  const asContainer = parseContainerId(overId);
+  if (asContainer !== undefined) return asContainer;
+  const asGroup = parseGroupSortableId(overId);
+  if (asGroup !== null) return asGroup;
+  if (!scenes.some((scene) => scene.id === String(overId))) {
+    return undefined;
+  }
+  return findSceneContainer(String(overId), scenes);
+}
+
+function containerSignature(
+  scenes: Scene[],
+  containers: Array<string | null>,
+): string {
+  return containers
+    .map((container) =>
+      scenesInGroup(scenes, container)
+        .map((scene) => `${scene.id}:${scene.group_id}:${scene.position}`)
+        .join(","),
+    )
+    .join("|");
+}
+
 export function SceneSidebar({
   tourId,
   userId,
@@ -148,6 +175,13 @@ export function SceneSidebar({
   const [activeDragId, setActiveDragId] = useState<UniqueIdentifier | null>(
     null,
   );
+  const dragOriginRef = useRef<{
+    sceneId: string;
+    groupId: string | null;
+    scenes: Scene[];
+  } | null>(null);
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [uploadGroupId, setUploadGroupId] = useState<string | null>(null);
 
@@ -215,202 +249,259 @@ export function SceneSidebar({
     nextScenes: Scene[],
     containers: Array<string | null>,
   ) {
-    for (const container of containers) {
-      const ids = scenesInGroup(nextScenes, container).map((scene) => scene.id);
-      const ok = await run(() => reorderScenes(tourId, container, ids));
-      if (!ok) {
-        onScenesChange(previousScenes);
-        toast.error("Could not save scene order");
-        return false;
-      }
+    const unique = [...new Set(containers.map((c) => c ?? UNGROUPED_KEY))].map(
+      (key) => (key === UNGROUPED_KEY ? null : key),
+    );
+
+    const payload = unique.map((container) => ({
+      groupId: container,
+      orderedSceneIds: scenesInGroup(nextScenes, container).map(
+        (scene) => scene.id,
+      ),
+    }));
+
+    let actionResult: Awaited<ReturnType<typeof persistSceneContainerOrders>> =
+      {};
+    const ok = await run(async () => {
+      actionResult = await persistSceneContainerOrders(tourId, payload);
+      return actionResult;
+    });
+
+    if (!ok) {
+      onScenesChange(previousScenes);
+      toast.error(
+        actionResult.error ?? "Could not save scene group or order",
+      );
+      return false;
+    }
+
+    if (actionResult.scenes) {
+      onScenesChange(sortScenesByGroupOrder(actionResult.scenes, sortedGroups));
     }
     return true;
   }
 
   function handleDragStart(event: DragStartEvent) {
     setActiveDragId(event.active.id);
+    if (parseGroupSortableId(event.active.id)) {
+      dragOriginRef.current = null;
+      return;
+    }
+    const sceneId = String(event.active.id);
+    const snapshot = scenesRef.current;
+    if (!snapshot.some((scene) => scene.id === sceneId)) {
+      dragOriginRef.current = null;
+      return;
+    }
+    dragOriginRef.current = {
+      sceneId,
+      groupId: findSceneContainer(sceneId, snapshot),
+      scenes: snapshot.map((scene) => ({ ...scene })),
+    };
   }
 
   function handleDragOver(event: DragOverEvent) {
-    const { active, over } = event;
-    if (!over) return;
-    if (parseGroupSortableId(active.id)) return;
+    try {
+      const { active, over } = event;
+      if (!over) return;
+      if (parseGroupSortableId(active.id)) return;
 
-    const activeId = String(active.id);
-    if (!scenes.some((scene) => scene.id === activeId)) return;
+      const activeId = String(active.id);
+      if (!scenes.some((scene) => scene.id === activeId)) return;
 
-    const overContainer =
-      parseContainerId(over.id) !== undefined
-        ? parseContainerId(over.id)!
-        : parseGroupSortableId(over.id) !== null
-          ? parseGroupSortableId(over.id)
-          : findSceneContainer(String(over.id), scenes);
+      const overContainer = resolveOverContainer(over.id, scenes);
+      if (overContainer === undefined) return;
 
-    if (overContainer === undefined) return;
+      const activeContainer = findSceneContainer(activeId, scenes);
+      if (activeContainer === overContainer) return;
 
-    const activeContainer = findSceneContainer(activeId, scenes);
-    if (activeContainer === overContainer) return;
+      const moving = scenes.find((scene) => scene.id === activeId);
+      if (!moving) return;
 
-    const moving = scenes.find((scene) => scene.id === activeId);
-    if (!moving) return;
+      const without = scenes.filter((scene) => scene.id !== activeId);
+      const destScenes = scenesInGroup(without, overContainer);
+      let insertIndex = destScenes.length;
+      if (
+        parseContainerId(over.id) === undefined &&
+        parseGroupSortableId(over.id) === null
+      ) {
+        const overIndex = destScenes.findIndex((scene) => scene.id === over.id);
+        if (overIndex >= 0) insertIndex = overIndex;
+      }
 
-    const without = scenes.filter((scene) => scene.id !== activeId);
-    const destScenes = scenesInGroup(without, overContainer);
-    let insertIndex = destScenes.length;
-    if (
-      parseContainerId(over.id) === undefined &&
-      parseGroupSortableId(over.id) === null
-    ) {
-      const overIndex = destScenes.findIndex((scene) => scene.id === over.id);
-      if (overIndex >= 0) insertIndex = overIndex;
+      const newDest = [...destScenes];
+      newDest.splice(insertIndex, 0, { ...moving, group_id: overContainer });
+
+      const next = scenes.map((scene) => {
+        if (scene.id === activeId) {
+          return {
+            ...scene,
+            group_id: overContainer,
+            position: newDest.findIndex((item) => item.id === activeId),
+          };
+        }
+        if (scene.group_id === overContainer) {
+          const position = newDest.findIndex((item) => item.id === scene.id);
+          return position >= 0 ? { ...scene, position } : scene;
+        }
+        if (scene.group_id === activeContainer) {
+          const sourceList = scenesInGroup(without, activeContainer);
+          const position = sourceList.findIndex((item) => item.id === scene.id);
+          return position >= 0 ? { ...scene, position } : scene;
+        }
+        return scene;
+      });
+
+      applySceneOrder(next);
+    } catch (error) {
+      console.error("[scene-sidebar] handleDragOver", error);
     }
-
-    const newDest = [...destScenes];
-    newDest.splice(insertIndex, 0, { ...moving, group_id: overContainer });
-
-    const next = scenes.map((scene) => {
-      if (scene.id === activeId) {
-        return {
-          ...scene,
-          group_id: overContainer,
-          position: newDest.findIndex((item) => item.id === activeId),
-        };
-      }
-      if (scene.group_id === overContainer) {
-        const position = newDest.findIndex((item) => item.id === scene.id);
-        return position >= 0 ? { ...scene, position } : scene;
-      }
-      if (scene.group_id === activeContainer) {
-        const sourceList = scenesInGroup(without, activeContainer);
-        const position = sourceList.findIndex((item) => item.id === scene.id);
-        return position >= 0 ? { ...scene, position } : scene;
-      }
-      return scene;
-    });
-
-    applySceneOrder(next);
   }
 
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
+    const origin = dragOriginRef.current;
+    dragOriginRef.current = null;
     setActiveDragId(null);
-    if (!over) return;
 
-    const draggedGroupId = parseGroupSortableId(active.id);
-    if (draggedGroupId) {
-      const overGroupId =
-        parseGroupSortableId(over.id) ??
-        (parseContainerId(over.id) !== undefined
-          ? parseContainerId(over.id)
-          : findSceneContainer(String(over.id), scenes));
+    try {
+      if (!over) return;
 
-      if (!overGroupId || overGroupId === draggedGroupId) return;
+      const draggedGroupId = parseGroupSortableId(active.id);
+      if (draggedGroupId) {
+        const overGroupId =
+          parseGroupSortableId(over.id) ??
+          (parseContainerId(over.id) !== undefined
+            ? parseContainerId(over.id)
+            : findSceneContainer(String(over.id), scenes));
 
-      const oldIndex = sortedGroups.findIndex((g) => g.id === draggedGroupId);
-      const newIndex = sortedGroups.findIndex((g) => g.id === overGroupId);
-      if (oldIndex < 0 || newIndex < 0) return;
+        if (!overGroupId || overGroupId === draggedGroupId) return;
 
-      const previous = groups;
-      const reordered = arrayMove(sortedGroups, oldIndex, newIndex).map(
-        (group, position) => ({ ...group, position }),
-      );
-      onGroupsChange(reordered);
+        const oldIndex = sortedGroups.findIndex((g) => g.id === draggedGroupId);
+        const newIndex = sortedGroups.findIndex((g) => g.id === overGroupId);
+        if (oldIndex < 0 || newIndex < 0) return;
 
-      const ok = await run(() =>
-        reorderGroups(
-          tourId,
-          reordered.map((group) => group.id),
-        ),
-      );
-      if (!ok) {
-        onGroupsChange(previous);
-        toast.error("Could not save group order");
-      }
-      return;
-    }
-
-    const activeId = String(active.id);
-    if (!scenes.some((scene) => scene.id === activeId)) return;
-
-    const overContainer =
-      parseContainerId(over.id) !== undefined
-        ? parseContainerId(over.id)!
-        : parseGroupSortableId(over.id) !== null
-          ? parseGroupSortableId(over.id)
-          : findSceneContainer(String(over.id), scenes);
-
-    if (overContainer === undefined) return;
-
-    const previous = scenes;
-    let next = scenes.map((scene) => ({ ...scene }));
-    const activeContainer = findSceneContainer(activeId, next);
-
-    if (activeContainer === overContainer) {
-      const list = scenesInGroup(next, activeContainer);
-      const oldIndex = list.findIndex((scene) => scene.id === activeId);
-      const newIndex = list.findIndex((scene) => scene.id === over.id);
-      if (oldIndex < 0) return;
-      const targetIndex =
-        newIndex < 0
-          ? list.length - 1
-          : newIndex;
-      if (oldIndex === targetIndex) return;
-
-      const moved = arrayMove(list, oldIndex, targetIndex);
-      next = next.map((scene) => {
-        if (scene.group_id !== activeContainer) return scene;
-        const position = moved.findIndex((item) => item.id === scene.id);
-        return position >= 0 ? { ...scene, position } : scene;
-      });
-      applySceneOrder(next);
-      await persistContainerOrders(previous, next, [activeContainer]);
-      return;
-    }
-
-    // Cross-container: state should already be updated in onDragOver; commit both.
-    next = next.map((scene) =>
-      scene.id === activeId ? { ...scene, group_id: overContainer } : scene,
-    );
-
-    const destList = scenesInGroup(
-      next.filter((scene) => scene.id !== activeId),
-      overContainer,
-    );
-    const overIndex = destList.findIndex((scene) => scene.id === over.id);
-    const insertAt =
-      parseContainerId(over.id) !== undefined
-        ? destList.length
-        : overIndex >= 0
-          ? overIndex
-          : destList.length;
-    destList.splice(insertAt, 0, {
-      ...(next.find((scene) => scene.id === activeId) as Scene),
-      group_id: overContainer,
-    });
-
-    next = next.map((scene) => {
-      const destPos = destList.findIndex((item) => item.id === scene.id);
-      if (destPos >= 0) {
-        return { ...scene, group_id: overContainer, position: destPos };
-      }
-      if (scene.group_id === activeContainer) {
-        const sourceList = scenesInGroup(
-          next.filter((s) => s.id !== activeId),
-          activeContainer,
+        const previous = groups;
+        const reordered = arrayMove(sortedGroups, oldIndex, newIndex).map(
+          (group, position) => ({ ...group, position }),
         );
-        const position = sourceList.findIndex((item) => item.id === scene.id);
-        return position >= 0
-          ? { ...scene, group_id: activeContainer, position }
-          : scene;
-      }
-      return scene;
-    });
+        onGroupsChange(reordered);
 
-    applySceneOrder(next);
-    await persistContainerOrders(previous, next, [
-      activeContainer,
-      overContainer,
-    ]);
+        let actionResult: Awaited<ReturnType<typeof reorderGroups>> = {};
+        const ok = await run(async () => {
+          actionResult = await reorderGroups(
+            tourId,
+            reordered.map((group) => group.id),
+          );
+          return actionResult;
+        });
+        if (!ok) {
+          onGroupsChange(previous);
+          toast.error(actionResult.error ?? "Could not save group order");
+          return;
+        }
+        if (actionResult.groups) {
+          onGroupsChange(actionResult.groups);
+        }
+        return;
+      }
+
+      const activeId = String(active.id);
+      const latestScenes = scenesRef.current;
+      if (!latestScenes.some((scene) => scene.id === activeId)) return;
+
+      const overContainer = resolveOverContainer(over.id, latestScenes);
+      if (overContainer === undefined) return;
+
+      // Origin before onDragOver mutations — required for cross-container persist.
+      const previous = origin?.scenes ?? latestScenes.map((scene) => ({ ...scene }));
+      const originContainer =
+        origin?.sceneId === activeId
+          ? origin.groupId
+          : findSceneContainer(activeId, previous);
+
+      let next = latestScenes.map((scene) => ({ ...scene }));
+
+      if (originContainer === overContainer) {
+        const list = scenesInGroup(next, overContainer);
+        const oldIndex = list.findIndex((scene) => scene.id === activeId);
+        const newIndex = list.findIndex((scene) => scene.id === over.id);
+        if (oldIndex < 0) return;
+        const targetIndex = newIndex < 0 ? list.length - 1 : newIndex;
+        if (oldIndex !== targetIndex) {
+          const moved = arrayMove(list, oldIndex, targetIndex);
+          next = next.map((scene) => {
+            if (scene.group_id !== overContainer) return scene;
+            const position = moved.findIndex((item) => item.id === scene.id);
+            return position >= 0 ? { ...scene, position } : scene;
+          });
+        }
+      } else {
+        // Cross-container: rebuild destination from current over target.
+        next = next.map((scene) =>
+          scene.id === activeId ? { ...scene, group_id: overContainer } : scene,
+        );
+
+        const destList = scenesInGroup(
+          next.filter((scene) => scene.id !== activeId),
+          overContainer,
+        );
+        const overIndex = destList.findIndex((scene) => scene.id === over.id);
+        const insertAt =
+          parseContainerId(over.id) !== undefined
+            ? destList.length
+            : overIndex >= 0
+              ? overIndex
+              : destList.length;
+        const moving = next.find((scene) => scene.id === activeId);
+        if (!moving) return;
+        destList.splice(insertAt, 0, {
+          ...moving,
+          group_id: overContainer,
+        });
+
+        next = next.map((scene) => {
+          const destPos = destList.findIndex((item) => item.id === scene.id);
+          if (destPos >= 0) {
+            return { ...scene, group_id: overContainer, position: destPos };
+          }
+          if (scene.group_id === originContainer) {
+            const sourceList = scenesInGroup(
+              next.filter((s) => s.id !== activeId),
+              originContainer,
+            );
+            const position = sourceList.findIndex(
+              (item) => item.id === scene.id,
+            );
+            return position >= 0
+              ? { ...scene, group_id: originContainer, position }
+              : scene;
+          }
+          return scene;
+        });
+      }
+
+      const containers =
+        originContainer === overContainer
+          ? [overContainer]
+          : [originContainer, overContainer];
+
+      const beforeSig = containerSignature(previous, containers);
+      const afterSig = containerSignature(next, containers);
+
+      if (beforeSig === afterSig) {
+        return;
+      }
+
+      applySceneOrder(next);
+      await persistContainerOrders(previous, next, containers);
+    } catch (error) {
+      console.error("[scene-sidebar] handleDragEnd", error);
+      if (origin?.scenes) {
+        onScenesChange(origin.scenes);
+      }
+      toast.error("Could not finish scene drag");
+    }
   }
 
   async function handleDelete(scene: Scene) {
@@ -651,36 +742,27 @@ export function SceneSidebar({
                     </div>
                   </SortableContext>
 
-                  {ungroupedScenes.length > 0 ? (
-                    <UngroupedSection
-                      scenes={ungroupedScenes}
-                      selectedForUpload={uploadGroupId === null}
-                      activeSceneId={activeSceneId}
-                      onSelectUpload={() => setUploadGroupId(null)}
-                      onActiveSceneChange={onActiveSceneChange}
-                      onRenameScene={async (scene, name) => {
-                        const previous = scenes;
-                        onScenesChange(
-                          scenes.map((item) =>
-                            item.id === scene.id ? { ...item, name } : item,
-                          ),
-                        );
-                        const ok = await run(() =>
-                          renameScene(scene.id, name),
-                        );
-                        if (!ok) {
-                          onScenesChange(previous);
-                          toast.error("Could not rename scene");
-                        }
-                      }}
-                      onRequestDeleteScene={setDeleteTarget}
-                    />
-                  ) : (
-                    <EmptyUngroupedDrop
-                      selectedForUpload={uploadGroupId === null}
-                      onSelectUpload={() => setUploadGroupId(null)}
-                    />
-                  )}
+                  <UngroupedSection
+                    scenes={ungroupedScenes}
+                    selectedForUpload={uploadGroupId === null}
+                    activeSceneId={activeSceneId}
+                    onSelectUpload={() => setUploadGroupId(null)}
+                    onActiveSceneChange={onActiveSceneChange}
+                    onRenameScene={async (scene, name) => {
+                      const previous = scenes;
+                      onScenesChange(
+                        scenes.map((item) =>
+                          item.id === scene.id ? { ...item, name } : item,
+                        ),
+                      );
+                      const ok = await run(() => renameScene(scene.id, name));
+                      if (!ok) {
+                        onScenesChange(previous);
+                        toast.error("Could not rename scene");
+                      }
+                    }}
+                    onRequestDeleteScene={setDeleteTarget}
+                  />
                 </>
               )}
             </DndContext>
@@ -1108,45 +1190,23 @@ function UngroupedSection({
           items={scenes.map((scene) => scene.id)}
           strategy={verticalListSortingStrategy}
         >
-          <SceneList
-            scenes={scenes}
-            activeSceneId={activeSceneId}
-            globalOffset={0}
-            onActiveSceneChange={onActiveSceneChange}
-            onRename={onRenameScene}
-            onRequestDelete={onRequestDeleteScene}
-          />
+          {scenes.length === 0 ? (
+            <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+              Drag here to ungroup
+            </p>
+          ) : (
+            <SceneList
+              scenes={scenes}
+              activeSceneId={activeSceneId}
+              globalOffset={0}
+              onActiveSceneChange={onActiveSceneChange}
+              onRename={onRenameScene}
+              onRequestDelete={onRequestDeleteScene}
+            />
+          )}
         </SortableContext>
       </div>
     </div>
-  );
-}
-
-function EmptyUngroupedDrop({
-  selectedForUpload,
-  onSelectUpload,
-}: {
-  selectedForUpload: boolean;
-  onSelectUpload: () => void;
-}) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: containerId(null),
-    data: { type: "container", groupId: null },
-  });
-
-  return (
-    <button
-      type="button"
-      ref={setNodeRef}
-      onClick={onSelectUpload}
-      className={cn(
-        "w-full rounded-lg px-2.5 py-3 text-left text-[11px] text-muted-foreground ring-1 ring-dashed ring-foreground/15",
-        selectedForUpload && "ring-foreground/30",
-        isOver && "bg-muted/60",
-      )}
-    >
-      Ungrouped — drop scenes here
-    </button>
   );
 }
 

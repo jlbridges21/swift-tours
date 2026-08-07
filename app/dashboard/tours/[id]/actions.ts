@@ -31,6 +31,8 @@ import type { FloorPlan, Scene, SceneGroup } from "@/types";
 
 export type SceneActionResult = {
   error?: string;
+  scenes?: Scene[];
+  groups?: SceneGroup[];
 };
 
 function editorPath(tourId: string) {
@@ -308,11 +310,28 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
 /**
  * Reorder scenes within one group (or the ungrouped bucket when groupId is null).
  * Also assigns group_id so cross-group drops can commit via this action.
+ *
+ * Uses explicit .update() per row — never .upsert() with partial payloads, which
+ * can reset omitted columns to defaults under PostgREST ON CONFLICT.
  */
 export async function reorderScenes(
   tourId: string,
   groupId: string | null,
   orderedSceneIds: string[],
+): Promise<SceneActionResult> {
+  return persistSceneContainerOrders(tourId, [
+    { groupId, orderedSceneIds },
+  ]);
+}
+
+/**
+ * Persist one or more group buckets in a single round-trip.
+ * Cross-container drops must use this so source + destination commit together
+ * before any cache revalidation.
+ */
+export async function persistSceneContainerOrders(
+  tourId: string,
+  containers: Array<{ groupId: string | null; orderedSceneIds: string[] }>,
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedTour(tourId);
   if (owned.error || !owned.user) {
@@ -321,7 +340,8 @@ export async function reorderScenes(
 
   const { supabase } = owned;
 
-  if (groupId) {
+  for (const { groupId } of containers) {
+    if (!groupId) continue;
     const { data: group, error: groupError } = await supabase
       .from("scene_groups")
       .select("id, tour_id")
@@ -335,38 +355,51 @@ export async function reorderScenes(
     }
   }
 
-  const { data: existing, error: fetchError } = await supabase
+  const allIds = containers.flatMap((container) => container.orderedSceneIds);
+  if (allIds.length > 0) {
+    const { data: existing, error: fetchError } = await supabase
+      .from("scenes")
+      .select("id")
+      .eq("tour_id", tourId)
+      .in("id", allIds);
+
+    if (fetchError) {
+      return { error: fetchError.message };
+    }
+
+    const found = new Set((existing ?? []).map((scene) => scene.id));
+    for (const id of allIds) {
+      if (!found.has(id)) {
+        return { error: "One or more scenes were not found." };
+      }
+    }
+  }
+
+  for (const { groupId, orderedSceneIds } of containers) {
+    for (const [position, id] of orderedSceneIds.entries()) {
+      const { error } = await supabase
+        .from("scenes")
+        .update({ position, group_id: groupId })
+        .eq("id", id)
+        .eq("tour_id", tourId);
+      if (error) {
+        return { error: error.message };
+      }
+    }
+  }
+
+  const { data: scenes, error: reloadError } = await supabase
     .from("scenes")
     .select("*")
-    .eq("tour_id", tourId);
+    .eq("tour_id", tourId)
+    .order("position", { ascending: true });
 
-  if (fetchError) {
-    return { error: fetchError.message };
-  }
-
-  const byId = new Map((existing ?? []).map((scene) => [scene.id, scene]));
-  const upserts: Scene[] = [];
-
-  for (const [position, id] of orderedSceneIds.entries()) {
-    const scene = byId.get(id);
-    if (!scene) {
-      return { error: "One or more scenes were not found." };
-    }
-    upserts.push({ ...scene, position, group_id: groupId });
-  }
-
-  if (upserts.length === 0) {
-    return {};
-  }
-
-  const { error } = await supabase.from("scenes").upsert(upserts);
-
-  if (error) {
-    return { error: error.message };
+  if (reloadError) {
+    return { error: reloadError.message };
   }
 
   revalidateTourCaches(tourId, owned.tour?.slug);
-  return {};
+  return { scenes: scenes ?? [] };
 }
 
 export async function createGroup(
@@ -524,28 +557,41 @@ export async function reorderGroups(
   }
 
   const byId = new Map((existing ?? []).map((group) => [group.id, group]));
-  const upserts: SceneGroup[] = [];
 
-  for (const [position, id] of orderedGroupIds.entries()) {
-    const group = byId.get(id);
-    if (!group) {
-      return { error: "One or more groups were not found." };
-    }
-    upserts.push({ ...group, position });
-  }
-
-  if (upserts.length === 0) {
+  if (orderedGroupIds.length === 0) {
     return {};
   }
 
-  const { error } = await supabase.from("scene_groups").upsert(upserts);
+  for (const id of orderedGroupIds) {
+    if (!byId.has(id)) {
+      return { error: "One or more groups were not found." };
+    }
+  }
 
-  if (error) {
-    return { error: error.message };
+  // Explicit column updates only — never partial upsert.
+  for (const [position, id] of orderedGroupIds.entries()) {
+    const { error } = await supabase
+      .from("scene_groups")
+      .update({ position })
+      .eq("id", id)
+      .eq("tour_id", tourId);
+    if (error) {
+      return { error: error.message };
+    }
+  }
+
+  const { data: groups, error: reloadError } = await supabase
+    .from("scene_groups")
+    .select("*")
+    .eq("tour_id", tourId)
+    .order("position", { ascending: true });
+
+  if (reloadError) {
+    return { error: reloadError.message };
   }
 
   revalidateTourCaches(tourId, owned.tour.slug);
-  return {};
+  return { groups: groups ?? [] };
 }
 
 export async function moveSceneToGroup(
@@ -606,8 +652,18 @@ export async function moveSceneToGroup(
     return { error: error.message };
   }
 
+  const { data: scenes, error: reloadError } = await supabase
+    .from("scenes")
+    .select("*")
+    .eq("tour_id", scene.tour_id)
+    .order("position", { ascending: true });
+
+  if (reloadError) {
+    return { error: reloadError.message };
+  }
+
   revalidateTourCaches(scene.tour_id, owned.tour.slug);
-  return {};
+  return { scenes: scenes ?? [] };
 }
 
 export async function updateSceneInitialView(

@@ -160,6 +160,14 @@ function TourEditorInner({
   }, [initialScenes]);
 
   useEffect(() => {
+    setGroups(initialGroups);
+  }, [initialGroups]);
+
+  useEffect(() => {
+    setFloorPlans(initialFloorPlans);
+  }, [initialFloorPlans]);
+
+  useEffect(() => {
     setHotspots(initialHotspots);
   }, [initialHotspots]);
 
