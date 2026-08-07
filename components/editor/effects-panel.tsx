@@ -30,6 +30,7 @@ const TRANSITION_LABELS: Record<TransitionEffect, string> = {
   fade: "Fade",
   black: "Fade through black",
   white: "Fade through white",
+  zoom: "Zoom (walk-in)",
 };
 
 export type TourEffectsFields = {
@@ -39,6 +40,7 @@ export type TourEffectsFields = {
   transition_zoom: boolean;
   transition_rotation: boolean;
   transition_motion_blur: boolean;
+  walkthrough_enabled: boolean;
   gyroscope_enabled: boolean;
   vr_enabled: boolean;
 };
@@ -62,6 +64,7 @@ export function effectsFieldsFromTour(tour: Tour): TourEffectsFields {
     transition_zoom: tour.transition_zoom ?? true,
     transition_rotation: tour.transition_rotation ?? true,
     transition_motion_blur: tour.transition_motion_blur ?? false,
+    walkthrough_enabled: tour.walkthrough_enabled ?? false,
     gyroscope_enabled: tour.gyroscope_enabled ?? true,
     vr_enabled: tour.vr_enabled ?? true,
   };
@@ -83,6 +86,7 @@ export function viewerEffectsFromFields(
       rotation: values.transition_rotation,
       motionBlur: values.transition_motion_blur,
     },
+    walkthroughEnabled: values.walkthrough_enabled,
     gyroscopeEnabled: values.gyroscope_enabled,
     vrEnabled: values.vr_enabled,
   };
@@ -209,6 +213,12 @@ export function EffectsPanel({
             </option>
           ))}
         </select>
+        {transition === "zoom" ? (
+          <p className="text-xs text-muted-foreground">
+            Turns toward the hotspot, pushes forward with motion blur, and fades
+            into the next scene — like walking through a doorway.
+          </p>
+        ) : null}
         <div className="flex items-center justify-between gap-2">
           <Label className="text-xs font-normal">
             Speed ({local.transition_speed} ms)
@@ -282,6 +292,29 @@ export function EffectsPanel({
               }
               disabled={pending}
             />
+          </div>
+          <div className="space-y-1.5 border-t border-foreground/10 pt-3">
+            <div className="flex items-center justify-between gap-4">
+              <Label
+                htmlFor={`fx-wt-${tourId}`}
+                className="flex-1 text-xs font-normal"
+              >
+                Walkthrough mode — keep your heading consistent between
+                connected scenes
+              </Label>
+              <Switch
+                id={`fx-wt-${tourId}`}
+                checked={local.walkthrough_enabled}
+                onCheckedChange={(checked) =>
+                  update("walkthrough_enabled", checked)
+                }
+                disabled={pending}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Works best when hotspots are created in pairs (auto-create return
+              link). Applies to hotspot navigation only.
+            </p>
           </div>
         </div>
       </div>

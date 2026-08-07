@@ -41,6 +41,7 @@ export type Database = {
           transition_zoom: boolean;
           transition_rotation: boolean;
           transition_motion_blur: boolean;
+          walkthrough_enabled: boolean;
           gyroscope_enabled: boolean;
           vr_enabled: boolean;
           created_at: string;
@@ -70,6 +71,7 @@ export type Database = {
           transition_zoom?: boolean;
           transition_rotation?: boolean;
           transition_motion_blur?: boolean;
+          walkthrough_enabled?: boolean;
           gyroscope_enabled?: boolean;
           vr_enabled?: boolean;
           created_at?: string;
@@ -99,6 +101,7 @@ export type Database = {
           transition_zoom?: boolean;
           transition_rotation?: boolean;
           transition_motion_blur?: boolean;
+          walkthrough_enabled?: boolean;
           gyroscope_enabled?: boolean;
           vr_enabled?: boolean;
           created_at?: string;
@@ -318,6 +321,10 @@ export type Database = {
           label_visibility: string;
           video_id: string | null;
           video_start: number | null;
+          position_mode: string;
+          style_rotation: number;
+          orient_yaw: number;
+          orient_pitch: number;
           created_at: string;
         };
         Insert: {
@@ -336,6 +343,10 @@ export type Database = {
           label_visibility?: string;
           video_id?: string | null;
           video_start?: number | null;
+          position_mode?: string;
+          style_rotation?: number;
+          orient_yaw?: number;
+          orient_pitch?: number;
           created_at?: string;
         };
         Update: {
@@ -354,6 +365,10 @@ export type Database = {
           label_visibility?: string;
           video_id?: string | null;
           video_start?: number | null;
+          position_mode?: string;
+          style_rotation?: number;
+          orient_yaw?: number;
+          orient_pitch?: number;
           created_at?: string;
         };
         Relationships: [
@@ -440,6 +455,113 @@ export type Database = {
           },
         ];
       };
+      tour_sessions: {
+        Row: {
+          id: string;
+          tour_id: string;
+          visitor_id: string;
+          is_embed: boolean;
+          started_at: string;
+          duration_ms: number;
+        };
+        Insert: {
+          id: string;
+          tour_id: string;
+          visitor_id: string;
+          is_embed?: boolean;
+          started_at?: string;
+          duration_ms?: number;
+        };
+        Update: {
+          id?: string;
+          tour_id?: string;
+          visitor_id?: string;
+          is_embed?: boolean;
+          started_at?: string;
+          duration_ms?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "tour_sessions_tour_id_fkey";
+            columns: ["tour_id"];
+            isOneToOne: false;
+            referencedRelation: "tours";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      scene_dwell: {
+        Row: {
+          id: string;
+          session_id: string;
+          scene_id: string;
+          dwell_ms: number;
+        };
+        Insert: {
+          id?: string;
+          session_id: string;
+          scene_id: string;
+          dwell_ms?: number;
+        };
+        Update: {
+          id?: string;
+          session_id?: string;
+          scene_id?: string;
+          dwell_ms?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "scene_dwell_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "tour_sessions";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "scene_dwell_scene_id_fkey";
+            columns: ["scene_id"];
+            isOneToOne: false;
+            referencedRelation: "scenes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      hotspot_clicks: {
+        Row: {
+          id: string;
+          session_id: string;
+          hotspot_id: string;
+          clicked_at: string;
+        };
+        Insert: {
+          id?: string;
+          session_id: string;
+          hotspot_id: string;
+          clicked_at?: string;
+        };
+        Update: {
+          id?: string;
+          session_id?: string;
+          hotspot_id?: string;
+          clicked_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "hotspot_clicks_session_id_fkey";
+            columns: ["session_id"];
+            isOneToOne: false;
+            referencedRelation: "tour_sessions";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "hotspot_clicks_hotspot_id_fkey";
+            columns: ["hotspot_id"];
+            isOneToOne: false;
+            referencedRelation: "hotspots";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       tour_view_counts: {
@@ -459,7 +581,13 @@ export type Database = {
       };
     };
     Functions: {
-      [_ in never]: never;
+      tour_analytics_summary: {
+        Args: {
+          p_tour_id: string;
+          p_since?: string | null;
+        };
+        Returns: Json;
+      };
     };
     Enums: {
       [_ in never]: never;

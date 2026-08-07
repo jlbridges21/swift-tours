@@ -3,7 +3,7 @@
  */
 
 export type IntroEffect = "none" | "little_planet";
-export type TransitionEffect = "none" | "fade" | "black" | "white";
+export type TransitionEffect = "none" | "fade" | "black" | "white" | "zoom";
 
 export const INTRO_EFFECTS: IntroEffect[] = ["none", "little_planet"];
 export const TRANSITION_EFFECTS: TransitionEffect[] = [
@@ -11,7 +11,11 @@ export const TRANSITION_EFFECTS: TransitionEffect[] = [
   "fade",
   "black",
   "white",
+  "zoom",
 ];
+
+/** Peak zoom level during the zoom (walk-in) preset — strong push without clipping at 100. */
+export const ZOOM_WALK_IN_LEVEL = 90;
 
 export function isIntroEffect(value: string): value is IntroEffect {
   return (INTRO_EFFECTS as string[]).includes(value);
@@ -33,6 +37,8 @@ export type ViewerTransitionSettings = {
 export type ViewerEffectsSettings = {
   introEffect: IntroEffect;
   transition: ViewerTransitionSettings;
+  /** Keep heading consistent via return-hotspot reciprocity on link nav. */
+  walkthroughEnabled: boolean;
   gyroscopeEnabled: boolean;
   vrEnabled: boolean;
 };
@@ -46,6 +52,7 @@ export const DEFAULT_VIEWER_EFFECTS: ViewerEffectsSettings = {
     rotation: true,
     motionBlur: false,
   },
+  walkthroughEnabled: false,
   gyroscopeEnabled: true,
   vrEnabled: true,
 };
@@ -65,34 +72,81 @@ export function isTouchOrientationDevice(): boolean {
   return touch && orientation;
 }
 
-export function resolveTransitionOptions(
-  settings: ViewerTransitionSettings,
-): {
+export type ResolvedTransitionOptions = {
   showLoader: boolean;
+  /** PSV-supported effect (zoom preset maps to fade). */
   effect: "none" | "fade" | "black" | "white";
   speed: number;
   rotation: boolean;
   zoomTo?: number;
-} {
+  /** True when the tour transition_effect is the zoom walk-in preset. */
+  isZoomWalkIn: boolean;
+  /** Force CSS motion blur for this transition. */
+  forceMotionBlur: boolean;
+};
+
+export function resolveTransitionOptions(
+  settings: ViewerTransitionSettings,
+): ResolvedTransitionOptions {
   const reduced = prefersReducedMotion();
+  const isZoomWalkIn = settings.effect === "zoom";
+
   if (reduced) {
     return {
       showLoader: true,
       effect: "fade",
-      speed: 400,
+      speed: isZoomWalkIn ? 500 : 400,
       rotation: false,
+      isZoomWalkIn: false,
+      forceMotionBlur: false,
     };
   }
 
-  const effect =
-    settings.effect === "none" ? "none" : settings.effect;
+  if (isZoomWalkIn) {
+    return {
+      showLoader: true,
+      effect: "fade",
+      speed: Math.min(5000, Math.max(300, settings.speed)),
+      rotation: true,
+      zoomTo: ZOOM_WALK_IN_LEVEL,
+      isZoomWalkIn: true,
+      forceMotionBlur: true,
+    };
+  }
+
+  const effect: "none" | "fade" | "black" | "white" =
+    settings.effect === "none"
+      ? "none"
+      : settings.effect === "black"
+        ? "black"
+        : settings.effect === "white"
+          ? "white"
+          : "fade";
+
   return {
     showLoader: true,
     effect,
     speed: Math.min(5000, Math.max(300, settings.speed)),
     rotation: settings.rotation,
-    // Zoom-through: push in toward the link before/during the crossfade.
-    // Only meaningful when fromLink is present (caller gates this).
     zoomTo: settings.zoom ? 100 : undefined,
+    isZoomWalkIn: false,
+    forceMotionBlur: false,
   };
+}
+
+/** Normalize yaw to (-π, π]. */
+export function normalizeYaw(yaw: number): number {
+  const twoPi = Math.PI * 2;
+  let value = yaw % twoPi;
+  if (value <= -Math.PI) value += twoPi;
+  if (value > Math.PI) value -= twoPi;
+  return value;
+}
+
+/**
+ * Walkthrough arrival yaw: face forward out of the return doorway
+ * (return hotspot yaw + π). Pitch stays level (0).
+ */
+export function walkthroughArrivalYaw(returnHotspotYaw: number): number {
+  return normalizeYaw(returnHotspotYaw + Math.PI);
 }

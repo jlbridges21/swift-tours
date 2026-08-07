@@ -48,6 +48,11 @@ import {
   sanitizeHotspotColor,
 } from "@/lib/hotspot-styles";
 import {
+  planeRotationForMode,
+  resolvePositionMode,
+  upsertHotspotLayerElement,
+} from "@/lib/hotspot-placement";
+import {
   buildNadirMarkerConfig,
   isNadirMarkerId,
   NADIR_MARKER_ID,
@@ -58,6 +63,8 @@ import {
   DEFAULT_VIEWER_EFFECTS,
   prefersReducedMotion,
   resolveTransitionOptions,
+  walkthroughArrivalYaw,
+  ZOOM_WALK_IN_LEVEL,
   type ViewerEffectsSettings,
 } from "@/lib/viewer-effects";
 import type { Hotspot, Scene } from "@/types";
@@ -106,6 +113,10 @@ export type PanoramaViewerHotspot = Pick<
   | "label_visibility"
   | "video_id"
   | "video_start"
+  | "position_mode"
+  | "style_rotation"
+  | "orient_yaw"
+  | "orient_pitch"
 >;
 
 /** Tour-level nadir render settings (size/opacity/rotation are live; patch is per-scene). */
@@ -164,6 +175,8 @@ export type PanoramaViewerProps = {
   onOpenGallery?: (hotspotId: string) => void;
   /** View mode: open video modal for this hotspot. */
   onOpenVideo?: (hotspotId: string) => void;
+  /** Fired on any hotspot activation (link / info / gallery / video). */
+  onHotspotActivate?: (hotspotId: string) => void;
   onViewerReady?: (viewer: Viewer) => void;
 };
 
@@ -191,6 +204,7 @@ export function hotspotToMarkerConfig(
   hotspot: PanoramaViewerHotspot,
   selected: boolean,
   scenes: PanoramaViewerScene[] = [],
+  layerCache?: Map<string, HTMLElement>,
 ): MarkerConfig {
   const type =
     hotspot.type === "link" ||
@@ -218,34 +232,85 @@ export function hotspotToMarkerConfig(
           ? "Video"
           : "Info");
 
+  const positionMode = resolvePositionMode(hotspot.position_mode);
+  const styleRotation =
+    typeof hotspot.style_rotation === "number" &&
+    Number.isFinite(hotspot.style_rotation)
+      ? hotspot.style_rotation
+      : 0;
+  const orientYaw =
+    typeof hotspot.orient_yaw === "number" && Number.isFinite(hotspot.orient_yaw)
+      ? hotspot.orient_yaw
+      : 0;
+  const orientPitch =
+    typeof hotspot.orient_pitch === "number" &&
+    Number.isFinite(hotspot.orient_pitch)
+      ? hotspot.orient_pitch
+      : 0;
+
+  const html = buildHotspotMarkerHtml({
+    shape: hotspot.style_shape,
+    color: sanitizeHotspotColor(hotspot.style_color),
+    size: hotspot.style_size,
+    animation: hotspot.style_animation,
+    labelVisibility: hotspot.label_visibility,
+    label: hotspot.label,
+    fallbackLabel: targetName,
+    selected,
+  });
+
+  const data = {
+    hotspotId: hotspot.id,
+    type,
+    label: hotspot.label,
+    content: hotspot.content,
+    targetSceneId: hotspot.target_scene_id,
+    videoId: hotspot.video_id,
+    videoStart: hotspot.video_start,
+    yaw: hotspot.yaw,
+    pitch: hotspot.pitch,
+    positionMode,
+  };
+
+  const tooltip =
+    visibility === "hover" ? escapeHtml(tooltipLabel) : undefined;
+
+  if (positionMode === "floor" || positionMode === "wall") {
+    const cache = layerCache ?? new Map<string, HTMLElement>();
+    const element = upsertHotspotLayerElement(cache, hotspot.id, html);
+    const rotation = planeRotationForMode(
+      positionMode,
+      styleRotation,
+      orientYaw,
+      orientPitch,
+    );
+    return {
+      id: hotspot.id,
+      position: { yaw: hotspot.yaw, pitch: hotspot.pitch },
+      elementLayer: element,
+      size,
+      anchor: "center center",
+      rotation,
+      tooltip,
+      data,
+    };
+  }
+
+  // 2D billboard — style_rotation as CSS transform on marker content.
+  const rotatedHtml =
+    styleRotation !== 0
+      ? `<div style="transform:rotate(${styleRotation}deg);transform-origin:center center;">${html}</div>`
+      : html;
+
   return {
     id: hotspot.id,
     position: { yaw: hotspot.yaw, pitch: hotspot.pitch },
-    html: buildHotspotMarkerHtml({
-      shape: hotspot.style_shape,
-      color: sanitizeHotspotColor(hotspot.style_color),
-      size: hotspot.style_size,
-      animation: hotspot.style_animation,
-      labelVisibility: hotspot.label_visibility,
-      label: hotspot.label,
-      fallbackLabel: targetName,
-      selected,
-    }),
+    html: rotatedHtml,
     size,
     anchor: "center center",
     // PSV may render tooltip content as HTML — escape user/scene names.
-    tooltip: visibility === "hover" ? escapeHtml(tooltipLabel) : undefined,
-    data: {
-      hotspotId: hotspot.id,
-      type,
-      label: hotspot.label,
-      content: hotspot.content,
-      targetSceneId: hotspot.target_scene_id,
-      videoId: hotspot.video_id,
-      videoStart: hotspot.video_start,
-      yaw: hotspot.yaw,
-      pitch: hotspot.pitch,
-    },
+    tooltip,
+    data,
   };
 }
 
@@ -314,6 +379,7 @@ function buildNodes(
   hotspots: PanoramaViewerHotspot[],
   mode: "view" | "edit",
   nadirSettings?: PanoramaNadirSettings,
+  layerCache?: Map<string, HTMLElement>,
 ): VirtualTourNode[] {
   return scenes.map((scene) => {
     const sceneHotspots = hotspots.filter(
@@ -350,7 +416,7 @@ function buildNodes(
     // edit). Link navigation is handled in select-marker → setCurrentNode so
     // appearance stays identical. Empty VT links avoids the default 3D arrows.
     const markers: MarkerConfig[] = sceneHotspots.map((hotspot) =>
-      hotspotToMarkerConfig(hotspot, false, scenes),
+      hotspotToMarkerConfig(hotspot, false, scenes, layerCache),
     );
     const nadir = nadirMarkerForScene(scene, nadirSettings);
     if (nadir) markers.push(nadir);
@@ -397,6 +463,7 @@ function serializeNodesKey(
         position: marker.position,
         html: marker.html,
         imageLayer: marker.imageLayer,
+        elementLayer: Boolean(marker.elementLayer),
         size: marker.size,
         opacity: marker.opacity,
         rotation: marker.rotation,
@@ -413,8 +480,11 @@ function syncEditMarkers(
   highlightedHotspotId: string | null | undefined,
   scenes: PanoramaViewerScene[],
   skipPositionUpdateId?: string | null,
+  layerCache?: Map<string, HTMLElement>,
 ) {
-  const existingIds = new Set(markers.getMarkers().map((marker) => marker.id));
+  const existingById = new Map(
+    markers.getMarkers().map((marker) => [marker.id, marker]),
+  );
   const nextIds = new Set(sceneHotspots.map((hotspot) => hotspot.id));
 
   for (const hotspot of sceneHotspots) {
@@ -422,20 +492,33 @@ function syncEditMarkers(
       hotspot,
       hotspot.id === highlightedHotspotId,
       scenes,
+      layerCache,
     );
-    if (existingIds.has(hotspot.id)) {
-      // Drag owns position for this marker — don't snap it back mid-gesture.
-      if (hotspot.id === skipPositionUpdateId) continue;
-      markers.updateMarker(config);
+    // Drag owns position for this marker — don't snap it back mid-gesture.
+    if (hotspot.id === skipPositionUpdateId) continue;
+
+    const existing = existingById.get(hotspot.id);
+    if (existing) {
+      const nextIsLayer =
+        resolvePositionMode(hotspot.position_mode) !== "2d";
+      const existingIsLayer = existing.isCss3d();
+      // Marker type (html ↔ elementLayer) cannot change via updateMarker.
+      if (nextIsLayer !== existingIsLayer) {
+        markers.removeMarker(hotspot.id);
+        markers.addMarker(config);
+      } else {
+        markers.updateMarker(config);
+      }
     } else {
       markers.addMarker(config);
     }
   }
 
-  for (const id of existingIds) {
+  for (const id of existingById.keys()) {
     // Never remove the reserved nadir layer here — syncNadirMarker owns it.
     if (!nextIds.has(id) && !isNadirMarkerId(id)) {
       markers.removeMarker(id);
+      layerCache?.delete(id);
     }
   }
 }
@@ -479,6 +562,43 @@ function applyNodeInitialView(
   }
 
   viewer.rotate({ yaw: data.initialYaw, pitch: data.initialPitch });
+}
+
+/**
+ * Walkthrough arrival for A→B link nav.
+ * Prefer return-hotspot reciprocity; else first visit uses initial_yaw;
+ * else preserve the current heading.
+ */
+function resolveWalkthroughRotateTo(
+  fromSceneId: string | undefined,
+  toNode: VirtualTourNode,
+  viewer: Viewer,
+  hotspots: PanoramaViewerHotspot[],
+  visited: Set<string>,
+): { yaw: number; pitch: number } | null {
+  if (!fromSceneId) return null;
+
+  const returnLink = hotspots.find(
+    (h) =>
+      h.scene_id === toNode.id &&
+      h.target_scene_id === fromSceneId &&
+      h.type === "link",
+  );
+  if (returnLink) {
+    return { yaw: walkthroughArrivalYaw(returnLink.yaw), pitch: 0 };
+  }
+
+  if (!visited.has(toNode.id)) {
+    const data = toNode.data as
+      | { initialYaw?: number; initialPitch?: number }
+      | undefined;
+    if (typeof data?.initialYaw === "number") {
+      return { yaw: data.initialYaw, pitch: 0 };
+    }
+  }
+
+  const current = viewer.getPosition();
+  return { yaw: current.yaw, pitch: current.pitch };
 }
 
 type CanvasVisualState = {
@@ -580,6 +700,7 @@ export function PanoramaViewer({
   onInfoPopoverOpenChange,
   onOpenGallery,
   onOpenVideo,
+  onHotspotActivate,
   onViewerReady,
 }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -594,6 +715,7 @@ export function PanoramaViewer({
   const onInfoPopoverOpenChangeRef = useRef(onInfoPopoverOpenChange);
   const onOpenGalleryRef = useRef(onOpenGallery);
   const onOpenVideoRef = useRef(onOpenVideo);
+  const onHotspotActivateRef = useRef(onHotspotActivate);
   const onViewerReadyRef = useRef(onViewerReady);
   /** True while the initial setNodes→setCurrentNode load is in flight. */
   const bootstrappingRef = useRef(false);
@@ -602,10 +724,15 @@ export function PanoramaViewer({
   const draggingIdRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const hotspotsRef = useRef(hotspots);
+  const scenesRef = useRef(scenes);
   const viewerEffectsRef = useRef(viewerEffects);
   const introPendingRef = useRef(false);
   const introHandleRef = useRef<LittlePlanetHandle | null>(null);
   const introRanRef = useRef(false);
+  /** Scenes entered this viewer session (walkthrough first-visit fallback). */
+  const visitedScenesRef = useRef<Set<string>>(new Set());
+  /** Reuse CSS3D elementLayer DOM nodes across marker syncs. */
+  const hotspotLayerCacheRef = useRef<Map<string, HTMLElement>>(new Map());
   /** Motion blur / scale envelope during link transitions (composed into canvas filter). */
   const motionBlurPxRef = useRef(0);
   const motionScaleRef = useRef(1);
@@ -631,8 +758,10 @@ export function PanoramaViewer({
   onInfoPopoverOpenChangeRef.current = onInfoPopoverOpenChange;
   onOpenGalleryRef.current = onOpenGallery;
   onOpenVideoRef.current = onOpenVideo;
+  onHotspotActivateRef.current = onHotspotActivate;
   onViewerReadyRef.current = onViewerReady;
   hotspotsRef.current = hotspots;
+  scenesRef.current = scenes;
   viewerEffectsRef.current = viewerEffects;
 
   const hasScenes = scenes.length > 0;
@@ -671,7 +800,13 @@ export function PanoramaViewer({
     setInfoOverlay(null);
     setPanoramaRevealed(false);
 
-    const nodes = buildNodes(scenes, hotspots, mode, nadirSettings);
+    const nodes = buildNodes(
+      scenes,
+      hotspots,
+      mode,
+      nadirSettings,
+      hotspotLayerCacheRef.current,
+    );
     const startId = resolveStartId(scenes, currentSceneId ?? startSceneId);
     let cancelled = false;
     let loadTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -724,7 +859,7 @@ export function PanoramaViewer({
         VirtualTourPlugin.withConfig({
           dataMode: "client",
           positionMode: "manual",
-          transitionOptions: (to, _from, fromLink) => {
+          transitionOptions: (to, from, fromLink) => {
             const resolved = resolveTransitionOptions(
               viewerEffectsRef.current.transition,
             );
@@ -753,6 +888,36 @@ export function PanoramaViewer({
             let result = base;
             if (fromLink || introPendingRef.current) {
               result = base;
+
+              // Walkthrough: override arrival heading on link nav only.
+              if (
+                fromLink &&
+                viewerEffectsRef.current.walkthroughEnabled &&
+                from?.id
+              ) {
+                const arrival = resolveWalkthroughRotateTo(
+                  from.id,
+                  to,
+                  viewer,
+                  hotspotsRef.current,
+                  visitedScenesRef.current,
+                );
+                if (arrival) {
+                  const returnLink = hotspotsRef.current.find(
+                    (h) =>
+                      h.scene_id === to.id &&
+                      h.target_scene_id === from.id &&
+                      h.type === "link",
+                  );
+                  const firstVisit = !visitedScenesRef.current.has(to.id);
+                  result = {
+                    ...result,
+                    rotateTo: arrival,
+                    // Animate toward return/initial; preserve heading without a spin.
+                    rotation: Boolean(returnLink) || firstVisit,
+                  };
+                }
+              }
             } else {
               const data = to.data as
                 | { initialYaw?: number; initialPitch?: number }
@@ -861,6 +1026,7 @@ export function PanoramaViewer({
       setLoadError(null);
       setInfoOverlay(null);
       onSceneChangeRef.current?.(event.node.id);
+      visitedScenesRef.current.add(event.node.id);
 
       // First-scene intro owns the camera — start only once texture is ready.
       if (introPendingRef.current && !event.data?.fromLink) {
@@ -930,6 +1096,7 @@ export function PanoramaViewer({
         event.marker.data.targetSceneId
       ) {
         setInfoOverlay(null);
+        onHotspotActivateRef.current?.(event.marker.id);
         if (modeRef.current === "view") {
           const yaw = event.marker.data.yaw;
           const pitch = event.marker.data.pitch;
@@ -944,17 +1111,19 @@ export function PanoramaViewer({
                 }
               : undefined;
 
-          if (
-            fromLink &&
-            viewerEffectsRef.current.transition.motionBlur &&
-            !prefersReducedMotion()
-          ) {
-            const duration = resolveTransitionOptions(
-              viewerEffectsRef.current.transition,
-            ).speed;
+          const resolved = resolveTransitionOptions(
+            viewerEffectsRef.current.transition,
+          );
+          const useBlur =
+            Boolean(fromLink) &&
+            (resolved.forceMotionBlur ||
+              viewerEffectsRef.current.transition.motionBlur) &&
+            !prefersReducedMotion();
+
+          if (useBlur) {
             motionBlurCancelRef.current?.();
             motionBlurCancelRef.current = runMotionBlurAnimation(
-              duration,
+              resolved.speed,
               (blurPx, scale) => {
                 motionBlurPxRef.current = blurPx;
                 motionScaleRef.current = scale;
@@ -968,6 +1137,59 @@ export function PanoramaViewer({
             );
           }
 
+          // Zoom walk-in: push toward the hotspot first, then fade while
+          // settling zoom back to the prior level (not after the new scene shows).
+          if (fromLink && resolved.isZoomWalkIn) {
+            const linkYaw =
+              typeof fromLink.position === "object" &&
+              fromLink.position &&
+              "yaw" in fromLink.position
+                ? Number(fromLink.position.yaw)
+                : yaw;
+            const linkPitch =
+              typeof fromLink.position === "object" &&
+              fromLink.position &&
+              "pitch" in fromLink.position
+                ? Number(fromLink.position.pitch)
+                : pitch;
+            if (
+              typeof linkYaw !== "number" ||
+              typeof linkPitch !== "number" ||
+              !Number.isFinite(linkYaw) ||
+              !Number.isFinite(linkPitch)
+            ) {
+              void tour.setCurrentNode(targetId, undefined, fromLink);
+              return;
+            }
+            const prevZoom = viewer.getZoomLevel();
+            const pushMs = Math.round(resolved.speed * 0.45);
+            const fadeMs = Math.max(300, resolved.speed - pushMs);
+            void (async () => {
+              try {
+                await viewer.animate({
+                  yaw: linkYaw,
+                  pitch: linkPitch,
+                  zoom: ZOOM_WALK_IN_LEVEL,
+                  speed: pushMs,
+                });
+              } catch {
+                // Aborted by another navigation — still attempt the scene change.
+              }
+              void tour.setCurrentNode(
+                targetId,
+                {
+                  effect: "fade",
+                  speed: fadeMs,
+                  zoomTo: prevZoom,
+                  // Facing the doorway already; walkthrough may still rotate.
+                  rotation: viewerEffectsRef.current.walkthroughEnabled,
+                },
+                fromLink,
+              );
+            })();
+            return;
+          }
+
           void tour.setCurrentNode(targetId, undefined, fromLink);
         }
         return;
@@ -975,17 +1197,20 @@ export function PanoramaViewer({
 
       if (event.marker.data?.type === "gallery") {
         setInfoOverlay(null);
+        onHotspotActivateRef.current?.(event.marker.id);
         onOpenGalleryRef.current?.(event.marker.id);
         return;
       }
 
       if (event.marker.data?.type === "video") {
         setInfoOverlay(null);
+        onHotspotActivateRef.current?.(event.marker.id);
         onOpenVideoRef.current?.(event.marker.id);
         return;
       }
 
       if (event.marker.data?.type === "info") {
+        onHotspotActivateRef.current?.(event.marker.id);
         const yaw = event.marker.data.yaw;
         const pitch = event.marker.data.pitch;
         if (typeof yaw !== "number" || typeof pitch !== "number") {
@@ -1017,6 +1242,8 @@ export function PanoramaViewer({
         hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
         highlightedHotspotId,
         scenes,
+        null,
+        hotspotLayerCacheRef.current,
       );
       syncNadirMarker(
         markersPlugin,
@@ -1030,6 +1257,7 @@ export function PanoramaViewer({
     bootstrapSceneIdRef.current = startId;
     armLoadTimeout();
     tour.setNodes(nodes, startId);
+    visitedScenesRef.current = new Set([startId]);
 
     return () => {
       cancelled = true;
@@ -1105,7 +1333,13 @@ export function PanoramaViewer({
     const viewer = viewerRef.current;
     if (!viewer || !hasScenes) return;
 
-    const nodes = buildNodes(scenes, hotspots, mode, nadirSettings);
+    const nodes = buildNodes(
+      scenes,
+      hotspots,
+      mode,
+      nadirSettings,
+      hotspotLayerCacheRef.current,
+    );
     const key = serializeNodesKey(nodes, mode, nadirSettings);
     if (key === nodesKeyRef.current) return;
     nodesKeyRef.current = key;
@@ -1166,6 +1400,7 @@ export function PanoramaViewer({
       highlightedHotspotId,
       scenes,
       draggingIdRef.current,
+      hotspotLayerCacheRef.current,
     );
     syncNadirMarker(
       markersPlugin,

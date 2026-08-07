@@ -47,6 +47,13 @@ import {
   type LabelVisibility,
 } from "@/lib/hotspot-styles";
 import {
+  clampOrientRadians,
+  clampStyleRotation,
+  HOTSPOT_POSITION_MODES,
+  resolvePositionMode,
+  type HotspotPositionMode,
+} from "@/lib/hotspot-placement";
+import {
   parseYouTubeInput,
   youtubeThumbnailUrl,
 } from "@/lib/youtube";
@@ -358,6 +365,18 @@ function HotspotEditor({
   const [labelVisibility, setLabelVisibility] = useState<LabelVisibility>(
     (hotspot.label_visibility as LabelVisibility) || "hover",
   );
+  const [positionMode, setPositionMode] = useState<HotspotPositionMode>(
+    resolvePositionMode(hotspot.position_mode),
+  );
+  const [styleRotation, setStyleRotation] = useState(
+    clampStyleRotation(hotspot.style_rotation),
+  );
+  const [orientYaw, setOrientYaw] = useState(
+    clampOrientRadians(hotspot.orient_yaw),
+  );
+  const [orientPitch, setOrientPitch] = useState(
+    clampOrientRadians(hotspot.orient_pitch),
+  );
   const [applyOpen, setApplyOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const [addingReturn, setAddingReturn] = useState(false);
@@ -404,6 +423,10 @@ function HotspotEditor({
     setLabelVisibility(
       (hotspot.label_visibility as LabelVisibility) || "hover",
     );
+    setPositionMode(resolvePositionMode(hotspot.position_mode));
+    setStyleRotation(clampStyleRotation(hotspot.style_rotation));
+    setOrientYaw(clampOrientRadians(hotspot.orient_yaw));
+    setOrientPitch(clampOrientRadians(hotspot.orient_pitch));
   }, [
     hotspot.id,
     hotspot.label,
@@ -416,6 +439,10 @@ function HotspotEditor({
     hotspot.style_size,
     hotspot.style_animation,
     hotspot.label_visibility,
+    hotspot.position_mode,
+    hotspot.style_rotation,
+    hotspot.orient_yaw,
+    hotspot.orient_pitch,
   ]);
 
   useEffect(() => {
@@ -455,6 +482,10 @@ function HotspotEditor({
     style_size?: number;
     style_animation?: HotspotAnimation;
     label_visibility?: LabelVisibility;
+    position_mode?: HotspotPositionMode;
+    style_rotation?: number;
+    orient_yaw?: number;
+    orient_pitch?: number;
   }) {
     if (styleDebounceRef.current) clearTimeout(styleDebounceRef.current);
     styleDebounceRef.current = setTimeout(() => {
@@ -492,6 +523,10 @@ function HotspotEditor({
       style_size: hotspot.style_size,
       style_animation: hotspot.style_animation,
       label_visibility: hotspot.label_visibility,
+      position_mode: hotspot.position_mode ?? "2d",
+      style_rotation: hotspot.style_rotation ?? 0,
+      orient_yaw: hotspot.orient_yaw ?? 0,
+      orient_pitch: hotspot.orient_pitch ?? 0,
       video_id: null,
       video_start: null,
       created_at: new Date().toISOString(),
@@ -526,6 +561,10 @@ function HotspotEditor({
       style_size: size,
       style_animation: animation,
       label_visibility: labelVisibility,
+      position_mode: positionMode,
+      style_rotation: styleRotation,
+      orient_yaw: orientYaw,
+      orient_pitch: orientPitch,
     };
     onHotspotsChange(
       allHotspots.map((item) => ({
@@ -921,6 +960,106 @@ function HotspotEditor({
             </div>
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <Label>Placement</Label>
+            <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1">
+              {HOTSPOT_POSITION_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={positionMode === mode}
+                  className={cn(
+                    "rounded-md px-2 py-1.5 text-xs font-medium capitalize",
+                    positionMode === mode
+                      ? "bg-background shadow-sm"
+                      : "text-muted-foreground",
+                  )}
+                  onClick={() => {
+                    setPositionMode(mode);
+                    patchLocal({ position_mode: mode });
+                    scheduleStyleSave({ position_mode: mode });
+                  }}
+                >
+                  {mode === "2d" ? "2D" : mode}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              2D always faces the camera. Floor lays flat; Wall stands upright.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`rot-${hotspot.id}`}>
+              Rotation ({Math.round(styleRotation)}°)
+            </Label>
+            <input
+              id={`rot-${hotspot.id}`}
+              type="range"
+              min={0}
+              max={360}
+              step={1}
+              value={styleRotation}
+              className="w-full"
+              onChange={(event) => {
+                const next = clampStyleRotation(Number(event.target.value));
+                setStyleRotation(next);
+                patchLocal({ style_rotation: next });
+                scheduleStyleSave({ style_rotation: next });
+              }}
+            />
+          </div>
+
+          {positionMode === "floor" || positionMode === "wall" ? (
+            <div className="space-y-3 rounded-md border border-foreground/10 p-2">
+              <p className="text-xs text-muted-foreground">
+                Pitch and yaw fine-tune the plane&apos;s orientation — they do
+                not move the hotspot. Location stays governed by drag / click
+                placement.
+              </p>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`oy-${hotspot.id}`}>
+                  Yaw fine-tune ({orientYaw.toFixed(2)} rad)
+                </Label>
+                <input
+                  id={`oy-${hotspot.id}`}
+                  type="range"
+                  min={-Math.PI}
+                  max={Math.PI}
+                  step={0.01}
+                  value={orientYaw}
+                  className="w-full"
+                  onChange={(event) => {
+                    const next = clampOrientRadians(Number(event.target.value));
+                    setOrientYaw(next);
+                    patchLocal({ orient_yaw: next });
+                    scheduleStyleSave({ orient_yaw: next });
+                  }}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`op-${hotspot.id}`}>
+                  Pitch fine-tune ({orientPitch.toFixed(2)} rad)
+                </Label>
+                <input
+                  id={`op-${hotspot.id}`}
+                  type="range"
+                  min={-Math.PI}
+                  max={Math.PI}
+                  step={0.01}
+                  value={orientPitch}
+                  className="w-full"
+                  onChange={(event) => {
+                    const next = clampOrientRadians(Number(event.target.value));
+                    setOrientPitch(next);
+                    patchLocal({ orient_pitch: next });
+                    scheduleStyleSave({ orient_pitch: next });
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
+
           <Button
             type="button"
             variant="outline"
@@ -947,8 +1086,9 @@ function HotspotEditor({
           <AlertDialogHeader>
             <AlertDialogTitle>Apply style to all hotspots?</AlertDialogTitle>
             <AlertDialogDescription>
-              This overwrites shape, color, size, animation, and label
-              visibility on every hotspot in this tour.
+              This overwrites shape, color, size, animation, label visibility,
+              placement, rotation, and orientation on every hotspot in this
+              tour.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

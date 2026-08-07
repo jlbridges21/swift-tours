@@ -962,6 +962,10 @@ export async function updateHotspot(
     style_size?: number;
     style_animation?: string;
     label_visibility?: string;
+    position_mode?: string;
+    style_rotation?: number;
+    orient_yaw?: number;
+    orient_pitch?: number;
   },
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedHotspot(hotspotId);
@@ -972,6 +976,34 @@ export async function updateHotspot(
   const styleError = validateStylePatch(patch);
   if (styleError) {
     return { error: styleError };
+  }
+
+  if (patch.position_mode !== undefined) {
+    if (
+      patch.position_mode !== "2d" &&
+      patch.position_mode !== "floor" &&
+      patch.position_mode !== "wall"
+    ) {
+      return { error: "Invalid placement mode." };
+    }
+  }
+  if (patch.style_rotation !== undefined) {
+    if (
+      !Number.isFinite(patch.style_rotation) ||
+      patch.style_rotation < 0 ||
+      patch.style_rotation > 360
+    ) {
+      return { error: "Rotation must be between 0 and 360." };
+    }
+  }
+  if (patch.orient_yaw !== undefined && !Number.isFinite(patch.orient_yaw)) {
+    return { error: "Invalid orientation yaw." };
+  }
+  if (
+    patch.orient_pitch !== undefined &&
+    !Number.isFinite(patch.orient_pitch)
+  ) {
+    return { error: "Invalid orientation pitch." };
   }
 
   if (patch.video_id !== undefined && patch.video_id !== null) {
@@ -999,6 +1031,10 @@ export async function updateHotspot(
     style_size?: number;
     style_animation?: string;
     label_visibility?: string;
+    position_mode?: string;
+    style_rotation?: number;
+    orient_yaw?: number;
+    orient_pitch?: number;
   } = {};
 
   if (patch.type !== undefined) update.type = patch.type;
@@ -1021,6 +1057,16 @@ export async function updateHotspot(
   }
   if (patch.label_visibility !== undefined) {
     update.label_visibility = patch.label_visibility;
+  }
+  if (patch.position_mode !== undefined) {
+    update.position_mode = patch.position_mode;
+  }
+  if (patch.style_rotation !== undefined) {
+    update.style_rotation = patch.style_rotation;
+  }
+  if (patch.orient_yaw !== undefined) update.orient_yaw = patch.orient_yaw;
+  if (patch.orient_pitch !== undefined) {
+    update.orient_pitch = patch.orient_pitch;
   }
 
   if (update.type === "info" || update.type === "gallery" || update.type === "video") {
@@ -1055,6 +1101,10 @@ export async function applyHotspotStyleToTour(
     style_size: number;
     style_animation: string;
     label_visibility: string;
+    position_mode?: string;
+    style_rotation?: number;
+    orient_yaw?: number;
+    orient_pitch?: number;
   },
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedTour(tourId);
@@ -1068,6 +1118,14 @@ export async function applyHotspotStyleToTour(
   }
   if (!HEX_COLOR_RE.test(style.style_color)) {
     return { error: "Color must be a hex value like #FFFFFF." };
+  }
+  if (
+    style.position_mode !== undefined &&
+    style.position_mode !== "2d" &&
+    style.position_mode !== "floor" &&
+    style.position_mode !== "wall"
+  ) {
+    return { error: "Invalid placement mode." };
   }
 
   const { data: scenes, error: scenesError } = await owned.supabase
@@ -1092,6 +1150,16 @@ export async function applyHotspotStyleToTour(
       style_size: style.style_size,
       style_animation: style.style_animation,
       label_visibility: style.label_visibility,
+      ...(style.position_mode !== undefined
+        ? { position_mode: style.position_mode }
+        : {}),
+      ...(style.style_rotation !== undefined
+        ? { style_rotation: style.style_rotation }
+        : {}),
+      ...(style.orient_yaw !== undefined ? { orient_yaw: style.orient_yaw } : {}),
+      ...(style.orient_pitch !== undefined
+        ? { orient_pitch: style.orient_pitch }
+        : {}),
     })
     .in("scene_id", sceneIds);
 

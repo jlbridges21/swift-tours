@@ -173,6 +173,13 @@ export function TourCard({ tour, priority = false }: TourCardProps) {
               >
                 Edit
               </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() =>
+                  router.push(`/dashboard/tours/${tour.id}/analytics`)
+                }
+              >
+                Analytics
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
                 Settings
               </DropdownMenuItem>

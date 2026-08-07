@@ -206,6 +206,7 @@ export async function updateTourEffects(
     transition_zoom?: boolean;
     transition_rotation?: boolean;
     transition_motion_blur?: boolean;
+    walkthrough_enabled?: boolean;
     gyroscope_enabled?: boolean;
     vr_enabled?: boolean;
   },
@@ -268,6 +269,9 @@ export async function updateTourEffects(
         : {}),
       ...(input.transition_motion_blur !== undefined
         ? { transition_motion_blur: input.transition_motion_blur }
+        : {}),
+      ...(input.walkthrough_enabled !== undefined
+        ? { walkthrough_enabled: input.walkthrough_enabled }
         : {}),
       ...(input.gyroscope_enabled !== undefined
         ? { gyroscope_enabled: input.gyroscope_enabled }
@@ -590,6 +594,7 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
     transition_zoom: original.transition_zoom,
     transition_rotation: original.transition_rotation,
     transition_motion_blur: original.transition_motion_blur,
+    walkthrough_enabled: original.walkthrough_enabled,
     gyroscope_enabled: original.gyroscope_enabled,
     vr_enabled: original.vr_enabled,
   });

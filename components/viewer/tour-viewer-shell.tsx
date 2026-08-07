@@ -16,6 +16,10 @@ import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
 import { SceneStrip } from "@/components/viewer/scene-strip";
 import { ShareButton } from "@/components/viewer/share-button";
 import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
+import {
+  AnalyticsTracker,
+  type AnalyticsTrackerApi,
+} from "@/components/viewer/analytics-tracker";
 import { useAutorotate } from "@/components/viewer/use-autorotate";
 import { VideoModal } from "@/components/viewer/video-modal";
 import { VrToggle } from "@/components/viewer/vr-toggle";
@@ -39,7 +43,7 @@ import type {
 } from "@/types";
 import { MapIcon } from "lucide-react";
 import type { Viewer } from "@photo-sphere-viewer/core";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 export type TourViewerShellProps = {
   tour: Tour;
@@ -50,6 +54,8 @@ export type TourViewerShellProps = {
   hotspotImages?: HotspotImage[];
   /** When true, record a public view (public + embed pages). */
   trackViews?: boolean;
+  /** Session analytics (dwell, clicks). Default true for viewer shells. */
+  trackAnalytics?: boolean;
   /** Optional top banner (owner preview). */
   banner?: ReactNode;
   /** Show share button. Default true. */
@@ -114,6 +120,7 @@ function effectsFromTour(tour: Tour): ViewerEffectsSettings {
       rotation: tour.transition_rotation ?? true,
       motionBlur: tour.transition_motion_blur ?? false,
     },
+    walkthroughEnabled: tour.walkthrough_enabled ?? false,
     gyroscopeEnabled: tour.gyroscope_enabled ?? true,
     vrEnabled: tour.vr_enabled ?? true,
   };
@@ -158,6 +165,7 @@ export function TourViewerShell({
   hotspots,
   hotspotImages = [],
   trackViews = false,
+  trackAnalytics = true,
   banner,
   showShare = true,
   showTitle = true,
@@ -193,6 +201,7 @@ export function TourViewerShell({
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [galleryHotspotId, setGalleryHotspotId] = useState<string | null>(null);
   const [videoHotspotId, setVideoHotspotId] = useState<string | null>(null);
+  const analyticsRef = useRef<AnalyticsTrackerApi | null>(null);
 
   const mediaModalOpen = galleryHotspotId != null || videoHotspotId != null;
   useAutorotate(viewer, autorotate, mediaModalOpen);
@@ -311,6 +320,14 @@ export function TourViewerShell({
   return (
     <div className="relative h-dvh w-full overflow-hidden bg-black">
       {trackViews ? <TourViewTracker tourId={tour.id} /> : null}
+      {trackAnalytics ? (
+        <AnalyticsTracker
+          ref={analyticsRef}
+          tourId={tour.id}
+          isEmbed={embedMode}
+          currentSceneId={currentSceneId}
+        />
+      ) : null}
 
       {banner ? (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
@@ -342,6 +359,9 @@ export function TourViewerShell({
           onViewerReady={setViewer}
           onOpenGallery={setGalleryHotspotId}
           onOpenVideo={setVideoHotspotId}
+          onHotspotActivate={(id) => {
+            analyticsRef.current?.recordHotspotClick(id);
+          }}
           ariaLabel={
             currentScene
               ? `360° panorama: ${currentScene.name}`

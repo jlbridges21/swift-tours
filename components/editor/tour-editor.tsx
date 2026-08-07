@@ -210,6 +210,7 @@ function TourEditorInner({
     tour.transition_zoom,
     tour.transition_rotation,
     tour.transition_motion_blur,
+    tour.walkthrough_enabled,
     tour.gyroscope_enabled,
     tour.vr_enabled,
   ]);
@@ -416,6 +417,10 @@ function TourEditorInner({
       style_size: DEFAULT_SIZE,
       style_animation: DEFAULT_ANIMATION,
       label_visibility: DEFAULT_LABEL_VISIBILITY,
+      position_mode: "2d",
+      style_rotation: 0,
+      orient_yaw: 0,
+      orient_pitch: 0,
       video_id: null,
       video_start: null,
       created_at: new Date().toISOString(),
@@ -439,6 +444,10 @@ function TourEditorInner({
         style_size: DEFAULT_SIZE,
         style_animation: DEFAULT_ANIMATION,
         label_visibility: DEFAULT_LABEL_VISIBILITY,
+        position_mode: "2d",
+        style_rotation: 0,
+        orient_yaw: 0,
+        orient_pitch: 0,
         video_id: null,
         video_start: null,
         created_at: new Date().toISOString(),
@@ -512,6 +521,10 @@ function TourEditorInner({
       style_size: DEFAULT_SIZE,
       style_animation: DEFAULT_ANIMATION,
       label_visibility: DEFAULT_LABEL_VISIBILITY,
+      position_mode: "2d",
+      style_rotation: 0,
+      orient_yaw: 0,
+      orient_pitch: 0,
       video_id: null,
       video_start: null,
       created_at: new Date().toISOString(),
@@ -604,6 +617,16 @@ function TourEditorInner({
 
           <div className="ml-auto flex items-center gap-3">
             <SaveStatusIndicator />
+            <Button
+              variant="outline"
+              size="sm"
+              nativeButton={false}
+              render={
+                <Link href={`/dashboard/tours/${tour.id}/analytics`} />
+              }
+            >
+              Analytics
+            </Button>
             <Button
               variant="outline"
               size="sm"
