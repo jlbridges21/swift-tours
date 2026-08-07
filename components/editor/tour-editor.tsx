@@ -73,6 +73,7 @@ function TourEditorInner({
   const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(
     null,
   );
+  const [movingHotspotId, setMovingHotspotId] = useState<string | null>(null);
   const [placeDraft, setPlaceDraft] = useState<PlaceHotspotDraft | null>(null);
 
   useEffect(() => {
@@ -99,8 +100,29 @@ function TourEditorInner({
 
   useEffect(() => {
     setSelectedHotspotId(null);
+    setMovingHotspotId(null);
     setPlaceDraft(null);
   }, [activeSceneId]);
+
+  // Esc cancels armed move mode.
+  useEffect(() => {
+    if (!movingHotspotId) return;
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMovingHotspotId(null);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [movingHotspotId]);
+
+  useEffect(() => {
+    if (movingHotspotId && !hotspots.some((h) => h.id === movingHotspotId)) {
+      setMovingHotspotId(null);
+    }
+  }, [hotspots, movingHotspotId]);
 
   const activeScene = useMemo(
     () => scenes.find((scene) => scene.id === activeSceneId) ?? null,
@@ -187,21 +209,22 @@ function TourEditorInner({
     if (payload.markerId) {
       setSelectedHotspotId(payload.markerId);
       setPlaceDraft(null);
+      // Do not disarm move on marker click — only Esc / Move toggle / successful move.
       return;
     }
 
-    // Click-to-move fallback (MarkersPlugin 5.15.1 has no draggable markers).
-    if (selectedHotspotId) {
-      const selected = hotspots.find(
-        (hotspot) => hotspot.id === selectedHotspotId,
-      );
-      if (selected && selected.scene_id === activeSceneId) {
-        void moveSelectedHotspot(selected, payload.yaw, payload.pitch);
-        setPlaceDraft(null);
-        return;
+    // Armed one-shot reposition — only when explicitly Move-armed.
+    if (movingHotspotId) {
+      const moving = hotspots.find((hotspot) => hotspot.id === movingHotspotId);
+      if (moving && moving.scene_id === activeSceneId) {
+        void moveHotspot(moving, payload.yaw, payload.pitch);
       }
+      setMovingHotspotId(null);
+      setPlaceDraft(null);
+      return;
     }
 
+    // Default: always open create panel on empty panorama clicks.
     setPlaceDraft({
       yaw: payload.yaw,
       pitch: payload.pitch,
@@ -210,11 +233,15 @@ function TourEditorInner({
     });
   }
 
-  async function moveSelectedHotspot(
-    hotspot: Hotspot,
-    yaw: number,
-    pitch: number,
-  ) {
+  function toggleMove(hotspotId: string) {
+    setPlaceDraft(null);
+    setSelectedHotspotId(hotspotId);
+    setMovingHotspotId((current) =>
+      current === hotspotId ? null : hotspotId,
+    );
+  }
+
+  async function moveHotspot(hotspot: Hotspot, yaw: number, pitch: number) {
     const previous = hotspots;
     const next = hotspots.map((item) =>
       item.id === hotspot.id ? { ...item, yaw, pitch } : item,
@@ -409,23 +436,33 @@ function TourEditorInner({
 
         <div className="order-1 flex min-h-0 min-w-0 flex-1 flex-col lg:order-2">
           <div className="relative min-h-[40vh] flex-1 lg:min-h-0">
+            {movingHotspotId ? (
+              <div className="absolute top-3 left-1/2 z-20 max-w-[min(90%,28rem)] -translate-x-1/2 rounded-lg bg-background/95 px-3 py-2 text-center text-sm shadow-md ring-1 ring-foreground/10">
+                Click a new location to move this hotspot — Esc to cancel
+              </div>
+            ) : null}
+
             <PanoramaViewer
               scenes={scenes}
               hotspots={hotspots}
               currentSceneId={activeSceneId ?? undefined}
               selectedHotspotId={selectedHotspotId}
+              movingHotspotId={movingHotspotId}
               startSceneId={tour.cover_scene_id ?? undefined}
               mode="edit"
               className="rounded-none"
               onSceneChange={setActiveSceneId}
-              onMarkerSelect={setSelectedHotspotId}
+              onMarkerSelect={(id) => {
+                setSelectedHotspotId(id);
+                setPlaceDraft(null);
+              }}
               onPanoramaClick={handlePanoramaClick}
               onViewerReady={(viewer) => {
                 viewerRef.current = viewer;
               }}
             />
 
-            {placeDraft && activeSceneId ? (
+            {placeDraft && activeSceneId && !movingHotspotId ? (
               <PlaceHotspotPanel
                 draft={placeDraft}
                 scenes={scenes}
@@ -473,9 +510,11 @@ function TourEditorInner({
             hotspots={hotspots}
             activeSceneId={activeSceneId}
             selectedHotspotId={selectedHotspotId}
+            movingHotspotId={movingHotspotId}
             onSelect={setSelectedHotspotId}
             onHotspotsChange={setHotspots}
             onFaceHotspot={faceHotspot}
+            onToggleMove={toggleMove}
           />
         </div>
       </div>

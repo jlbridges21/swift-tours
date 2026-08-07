@@ -1,6 +1,6 @@
 "use client";
 
-import { InfoIcon, Link2Icon, Trash2Icon } from "lucide-react";
+import { InfoIcon, Link2Icon, MoveIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -31,9 +31,11 @@ type HotspotPanelProps = {
   hotspots: Hotspot[];
   activeSceneId: string | null;
   selectedHotspotId: string | null;
+  movingHotspotId: string | null;
   onSelect: (hotspotId: string | null) => void;
   onHotspotsChange: (hotspots: Hotspot[]) => void;
   onFaceHotspot: (hotspot: Hotspot) => void;
+  onToggleMove: (hotspotId: string) => void;
 };
 
 export function HotspotPanel({
@@ -41,9 +43,11 @@ export function HotspotPanel({
   hotspots,
   activeSceneId,
   selectedHotspotId,
+  movingHotspotId,
   onSelect,
   onHotspotsChange,
   onFaceHotspot,
+  onToggleMove,
 }: HotspotPanelProps) {
   const { run } = useSaveStatus();
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -101,6 +105,7 @@ export function HotspotPanel({
           <ul className="flex flex-col gap-1">
             {sceneHotspots.map((hotspot) => {
               const active = hotspot.id === selectedHotspotId;
+              const moving = hotspot.id === movingHotspotId;
               const title =
                 hotspot.label?.trim() ||
                 (hotspot.type === "link"
@@ -109,36 +114,52 @@ export function HotspotPanel({
 
               return (
                 <li key={hotspot.id}>
-                  <button
-                    type="button"
+                  <div
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-muted",
+                      "flex w-full items-center gap-1 rounded-lg px-1 py-1 text-sm",
                       active && "bg-muted ring-1 ring-foreground/10",
+                      moving && "ring-1 ring-blue-500",
                     )}
-                    onClick={() => {
-                      onSelect(hotspot.id);
-                      onFaceHotspot(hotspot);
-                    }}
                   >
-                    {hotspot.type === "link" ? (
-                      <Link2Icon className="size-4 shrink-0 text-blue-600" />
-                    ) : (
-                      <InfoIcon className="size-4 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{title}</span>
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-muted/80"
+                      onClick={() => {
+                        onSelect(hotspot.id);
+                        onFaceHotspot(hotspot);
+                      }}
+                    >
+                      {hotspot.type === "link" ? (
+                        <Link2Icon className="size-4 shrink-0 text-blue-600" />
+                      ) : (
+                        <InfoIcon className="size-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{title}</span>
+                    </button>
+                    <Button
+                      type="button"
+                      variant={moving ? "default" : "ghost"}
+                      size="icon-xs"
+                      aria-label={moving ? "Cancel move" : "Move hotspot"}
+                      title={
+                        moving
+                          ? "Cancel move"
+                          : "Move — click a new spot on the panorama"
+                      }
+                      onClick={() => onToggleMove(hotspot.id)}
+                    >
+                      <MoveIcon />
+                    </Button>
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon-xs"
                       aria-label="Delete hotspot"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setDeleteId(hotspot.id);
-                      }}
+                      onClick={() => setDeleteId(hotspot.id)}
                     >
                       <Trash2Icon />
                     </Button>
-                  </button>
+                  </div>
                 </li>
               );
             })}
@@ -152,13 +173,9 @@ export function HotspotPanel({
             scenes={scenes}
             onHotspotsChange={onHotspotsChange}
             allHotspots={hotspots}
+            isMoving={selected.id === movingHotspotId}
+            onToggleMove={() => onToggleMove(selected.id)}
           />
-        ) : null}
-
-        {selected && selected.scene_id === activeSceneId ? (
-          <p className="mt-3 px-1 text-[11px] leading-snug text-muted-foreground">
-            Tip: click a new spot on the panorama to move the selected hotspot.
-          </p>
         ) : null}
       </div>
 
@@ -197,6 +214,8 @@ type HotspotEditorProps = {
   scenes: Scene[];
   allHotspots: Hotspot[];
   onHotspotsChange: (hotspots: Hotspot[]) => void;
+  isMoving: boolean;
+  onToggleMove: () => void;
 };
 
 function HotspotEditor({
@@ -204,6 +223,8 @@ function HotspotEditor({
   scenes,
   allHotspots,
   onHotspotsChange,
+  isMoving,
+  onToggleMove,
 }: HotspotEditorProps) {
   const { run } = useSaveStatus();
   const [label, setLabel] = useState(hotspot.label ?? "");
@@ -271,6 +292,17 @@ function HotspotEditor({
       <p className="text-xs font-medium text-muted-foreground uppercase">
         Edit {hotspot.type === "link" ? "link" : "info"}
       </p>
+
+      <Button
+        type="button"
+        variant={isMoving ? "default" : "outline"}
+        size="sm"
+        className="justify-start"
+        onClick={onToggleMove}
+      >
+        <MoveIcon className="size-3.5" />
+        {isMoving ? "Cancel move" : "Move on panorama"}
+      </Button>
 
       {hotspot.type === "link" ? (
         <div className="flex flex-col gap-1.5">

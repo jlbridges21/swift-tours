@@ -68,6 +68,8 @@ export type PanoramaViewerProps = {
   startSceneId?: string;
   currentSceneId?: string;
   selectedHotspotId?: string | null;
+  /** Armed one-shot reposition mode — highlight this marker and use crosshair cursor. */
+  movingHotspotId?: string | null;
   mode: "view" | "edit";
   className?: string;
   onSceneChange?: (sceneId: string) => void;
@@ -132,6 +134,13 @@ function buildNodes(
       (hotspot) => hotspot.scene_id === scene.id,
     );
 
+    // Per-scene landing view — VirtualTourNode has no native startPosition in 5.15.1,
+    // so we stash radians on node.data and apply them on node-changed (unless fromLink).
+    const nodeData = {
+      initialYaw: scene.initial_yaw,
+      initialPitch: scene.initial_pitch,
+    };
+
     // Edit mode: no VirtualTour links (they'd navigate on click). Markers are
     // managed separately via MarkersPlugin add/update/remove.
     if (mode === "edit") {
@@ -144,6 +153,7 @@ function buildNodes(
           : undefined,
         links: [],
         markers: [],
+        data: nodeData,
       };
     }
 
@@ -176,6 +186,7 @@ function buildNodes(
         : undefined,
       links,
       markers,
+      data: nodeData,
     };
   });
 }
@@ -191,6 +202,7 @@ function serializeNodesKey(
         panorama: node.panorama,
         thumbnail: node.thumbnail,
         name: node.name,
+        data: node.data,
       })),
     );
   }
@@ -201,6 +213,7 @@ function serializeNodesKey(
       panorama: node.panorama,
       thumbnail: node.thumbnail,
       name: node.name,
+      data: node.data,
       links: (node.links ?? []).map((link) => ({
         nodeId: link.nodeId,
         position: link.position,
@@ -219,7 +232,7 @@ function serializeNodesKey(
 function syncEditMarkers(
   markers: MarkersPlugin,
   sceneHotspots: PanoramaViewerHotspot[],
-  selectedHotspotId: string | null | undefined,
+  highlightedHotspotId: string | null | undefined,
 ) {
   const existingIds = new Set(markers.getMarkers().map((marker) => marker.id));
   const nextIds = new Set(sceneHotspots.map((hotspot) => hotspot.id));
@@ -227,7 +240,7 @@ function syncEditMarkers(
   for (const hotspot of sceneHotspots) {
     const config = hotspotToMarkerConfig(
       hotspot,
-      hotspot.id === selectedHotspotId,
+      hotspot.id === highlightedHotspotId,
     );
     if (existingIds.has(hotspot.id)) {
       markers.updateMarker(config);
@@ -243,12 +256,34 @@ function syncEditMarkers(
   }
 }
 
+function applyNodeInitialView(
+  viewer: Viewer,
+  node: VirtualTourNode,
+  fromLink: unknown,
+) {
+  // Link navigation: keep viewing direction for spatial continuity.
+  if (fromLink) return;
+
+  const data = node.data as
+    | { initialYaw?: number; initialPitch?: number }
+    | undefined;
+  if (
+    typeof data?.initialYaw !== "number" ||
+    typeof data?.initialPitch !== "number"
+  ) {
+    return;
+  }
+
+  viewer.rotate({ yaw: data.initialYaw, pitch: data.initialPitch });
+}
+
 export function PanoramaViewer({
   scenes,
   hotspots,
   startSceneId,
   currentSceneId,
   selectedHotspotId,
+  movingHotspotId,
   mode,
   className,
   onSceneChange,
@@ -275,6 +310,7 @@ export function PanoramaViewer({
   onViewerReadyRef.current = onViewerReady;
 
   const hasScenes = scenes.length > 0;
+  const highlightedHotspotId = movingHotspotId ?? selectedHotspotId;
 
   const startScene = useMemo(() => {
     if (!hasScenes) return null;
@@ -331,13 +367,19 @@ export function PanoramaViewer({
       syncEditMarkers(
         markersPlugin,
         hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
-        selectedHotspotId,
+        highlightedHotspotId,
       );
     }
 
-    const handleNodeChanged = (event: { node: { id: string } }) => {
+    const handleNodeChanged = (event: {
+      node: VirtualTourNode;
+      data?: { fromLink?: unknown };
+    }) => {
       setInfoOverlay(null);
       onSceneChangeRef.current?.(event.node.id);
+      // Apply stored initial view on first load / direct selection.
+      // Skip when fromLink is set so link navigation keeps spatial continuity.
+      applyNodeInitialView(viewer, event.node, event.data?.fromLink);
     };
     tour.addEventListener("node-changed", handleNodeChanged);
 
@@ -439,9 +481,17 @@ export function PanoramaViewer({
     syncEditMarkers(
       markersPlugin,
       hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
-      selectedHotspotId,
+      highlightedHotspotId,
     );
-  }, [mode, hasScenes, currentSceneId, hotspots, selectedHotspotId]);
+  }, [
+    mode,
+    hasScenes,
+    currentSceneId,
+    hotspots,
+    selectedHotspotId,
+    movingHotspotId,
+    highlightedHotspotId,
+  ]);
 
   // Edit-mode panorama click (empty space only — markers use select-marker).
   useEffect(() => {
@@ -490,6 +540,7 @@ export function PanoramaViewer({
         // Parent must give this an explicit height — WebGL canvases in a
         // zero-height container render nothing. Default fills the parent.
         "relative h-full min-h-[240px] overflow-hidden rounded-xl bg-black",
+        movingHotspotId && "cursor-crosshair",
         className,
       )}
     >
