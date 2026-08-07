@@ -34,6 +34,8 @@ type SceneUploaderProps = {
   tourId: string;
   userId: string;
   nextPosition: number;
+  /** Assign new scenes to this group; null/undefined = ungrouped. */
+  groupId?: string | null;
   /** When not 'none', generate a nadir patch after each scene is created (non-blocking). */
   nadirType?: string;
   nadirLogoPath?: string | null;
@@ -80,6 +82,7 @@ export function SceneUploader({
   tourId,
   userId,
   nextPosition,
+  groupId = null,
   nadirType = "none",
   nadirLogoPath = null,
   nadirLogoSource = "default",
@@ -226,6 +229,7 @@ export function SceneUploader({
             height: processed.height,
             fileSize: processed.fileSize,
             position: item.position,
+            groupId,
           });
 
           if (result.error) {
@@ -299,6 +303,7 @@ export function SceneUploader({
     },
     [
       nextPosition,
+      groupId,
       router,
       tourId,
       updateItem,

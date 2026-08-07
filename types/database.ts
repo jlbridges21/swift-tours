@@ -141,6 +141,7 @@ export type Database = {
           position: number;
           initial_yaw: number;
           initial_pitch: number;
+          group_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -161,6 +162,7 @@ export type Database = {
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
+          group_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -181,11 +183,51 @@ export type Database = {
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
+          group_id?: string | null;
           created_at?: string;
         };
         Relationships: [
           {
             foreignKeyName: "scenes_tour_id_fkey";
+            columns: ["tour_id"];
+            isOneToOne: false;
+            referencedRelation: "tours";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "scenes_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "scene_groups";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      scene_groups: {
+        Row: {
+          id: string;
+          tour_id: string;
+          name: string;
+          position: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          tour_id: string;
+          name?: string;
+          position?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          tour_id?: string;
+          name?: string;
+          position?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "scene_groups_tour_id_fkey";
             columns: ["tour_id"];
             isOneToOne: false;
             referencedRelation: "tours";

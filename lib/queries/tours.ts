@@ -1,8 +1,10 @@
+import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { createClient } from "@/lib/supabase/server";
-import type { Hotspot, Scene, Tour } from "@/types";
+import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 export type TourListItem = Tour & {
   scene_count: number;
+  group_count: number;
   cover_thumbnail_path: string | null;
   cover_adjust_brightness: number;
   cover_adjust_contrast: number;
@@ -12,6 +14,7 @@ export type TourListItem = Tour & {
 
 type TourQueryRow = Tour & {
   scenes: { count: number }[] | null;
+  scene_groups: { count: number }[] | null;
   cover_scene: {
     thumbnail_path: string | null;
     adjust_brightness: number;
@@ -30,6 +33,7 @@ export async function listTours(): Promise<TourListItem[]> {
       `
       *,
       scenes!scenes_tour_id_fkey(count),
+      scene_groups(count),
       cover_scene:scenes!fk_cover_scene(
         thumbnail_path,
         adjust_brightness,
@@ -48,10 +52,11 @@ export async function listTours(): Promise<TourListItem[]> {
   const rows = (data ?? []) as TourQueryRow[];
 
   return rows.map((row) => {
-    const { scenes, cover_scene, tour_views, ...tour } = row;
+    const { scenes, scene_groups, cover_scene, tour_views, ...tour } = row;
     return {
       ...tour,
       scene_count: scenes?.[0]?.count ?? 0,
+      group_count: scene_groups?.[0]?.count ?? 0,
       cover_thumbnail_path: cover_scene?.thumbnail_path ?? null,
       cover_adjust_brightness: cover_scene?.adjust_brightness ?? 1,
       cover_adjust_contrast: cover_scene?.adjust_contrast ?? 1,
@@ -77,11 +82,13 @@ export async function getTourById(id: string): Promise<Tour | null> {
   return data;
 }
 
-export async function listScenesForTour(tourId: string): Promise<Scene[]> {
+export async function listSceneGroupsForTour(
+  tourId: string,
+): Promise<SceneGroup[]> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
-    .from("scenes")
+    .from("scene_groups")
     .select("*")
     .eq("tour_id", tourId)
     .order("position", { ascending: true });
@@ -91,6 +98,29 @@ export async function listScenesForTour(tourId: string): Promise<Scene[]> {
   }
 
   return data ?? [];
+}
+
+export async function listScenesForTour(tourId: string): Promise<Scene[]> {
+  const supabase = await createClient();
+
+  const [{ data: scenes, error: scenesError }, { data: groups, error: groupsError }] =
+    await Promise.all([
+      supabase.from("scenes").select("*").eq("tour_id", tourId),
+      supabase
+        .from("scene_groups")
+        .select("*")
+        .eq("tour_id", tourId)
+        .order("position", { ascending: true }),
+    ]);
+
+  if (scenesError) {
+    throw new Error(scenesError.message);
+  }
+  if (groupsError) {
+    throw new Error(groupsError.message);
+  }
+
+  return sortScenesByGroupOrder(scenes ?? [], groups ?? []);
 }
 
 export async function listHotspotsForTour(tourId: string): Promise<Hotspot[]> {

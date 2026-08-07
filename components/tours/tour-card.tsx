@@ -54,6 +54,10 @@ export function TourCard({ tour, priority = false }: TourCardProps) {
     tour.scene_count === 0
       ? "No scenes yet"
       : `${tour.scene_count} ${tour.scene_count === 1 ? "scene" : "scenes"}`;
+  const groupLabel =
+    tour.group_count > 0
+      ? `${tour.group_count} ${tour.group_count === 1 ? "group" : "groups"}`
+      : null;
 
   function handleDuplicate() {
     startTransition(async () => {
@@ -121,6 +125,12 @@ export function TourCard({ tour, priority = false }: TourCardProps) {
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{sceneLabel}</span>
+              {groupLabel ? (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{groupLabel}</span>
+                </>
+              ) : null}
               <span aria-hidden="true">·</span>
               <span>{formatViewCount(tour.view_count)}</span>
               <span aria-hidden="true">·</span>

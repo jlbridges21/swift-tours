@@ -4,6 +4,11 @@ import type { Viewer } from "@photo-sphere-viewer/core";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { FullscreenToggle } from "@/components/viewer/fullscreen-toggle";
+import {
+  filterScenesForGroupKey,
+  GroupSelector,
+  useAutoSelectedGroupKey,
+} from "@/components/viewer/group-selector";
 import { GyroToggle } from "@/components/viewer/gyro-toggle";
 import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
 import { SceneStrip } from "@/components/viewer/scene-strip";
@@ -12,6 +17,7 @@ import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
 import { useAutorotate } from "@/components/viewer/use-autorotate";
 import { VrToggle } from "@/components/viewer/vr-toggle";
 import { resolvePanoramaPath } from "@/lib/gl-capabilities";
+import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { publicUrl } from "@/lib/storage";
 import {
   DEFAULT_VIEWER_EFFECTS,
@@ -19,11 +25,12 @@ import {
   isTransitionEffect,
   type ViewerEffectsSettings,
 } from "@/lib/viewer-effects";
-import type { Hotspot, Scene, Tour } from "@/types";
+import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 export type TourViewerShellProps = {
   tour: Tour;
   scenes: Scene[];
+  groups?: SceneGroup[];
   hotspots: Hotspot[];
   /** When true, record a public view (public + embed pages). */
   trackViews?: boolean;
@@ -35,6 +42,8 @@ export type TourViewerShellProps = {
   showTitle?: boolean;
   /** Show scene thumbnail strip. Default true. */
   showThumbs?: boolean;
+  /** Show group selector when groups exist. Default true. */
+  showGroups?: boolean;
   /** Show fullscreen control. Default true. */
   showFullscreen?: boolean;
   /** Slow auto-rotate until the user interacts. Default false. */
@@ -125,12 +134,14 @@ function postEmbedMessage(payload: Record<string, unknown>) {
 export function TourViewerShell({
   tour,
   scenes,
+  groups = [],
   hotspots,
   trackViews = false,
   banner,
   showShare = true,
   showTitle = true,
   showThumbs = true,
+  showGroups = true,
   showFullscreen = true,
   autorotate = false,
   branded = true,
@@ -144,9 +155,14 @@ export function TourViewerShell({
   const effectiveShowTitle = branded && showTitle;
   const effectiveShowShare = branded && showShare;
 
+  const orderedScenes = useMemo(
+    () => sortScenesByGroupOrder(scenes, groups),
+    [scenes, groups],
+  );
+
   const startSceneId = useMemo(
-    () => resolveStartSceneId(tour, scenes, startSceneOverride),
-    [tour, scenes, startSceneOverride],
+    () => resolveStartSceneId(tour, orderedScenes, startSceneOverride),
+    [tour, orderedScenes, startSceneOverride],
   );
   const [currentSceneId, setCurrentSceneId] = useState<string | null>(
     startSceneId ?? null,
@@ -157,17 +173,37 @@ export function TourViewerShell({
   useAutorotate(viewer, autorotate);
 
   const effects = useMemo(() => effectsFromTour(tour), [tour]);
-  const coverId = tour.cover_scene_id ?? scenes[0]?.id ?? null;
+  const coverId = tour.cover_scene_id ?? orderedScenes[0]?.id ?? null;
   // Skip intro when starting on a non-cover scene (?start=) or intro=0.
   const runIntro =
     allowIntro &&
     effects.introEffect === "little_planet" &&
     (!startSceneOverride || startSceneOverride === coverId);
 
-  const currentScene = scenes.find((s) => s.id === currentSceneId) ?? scenes[0];
+  const currentScene =
+    orderedScenes.find((s) => s.id === currentSceneId) ?? orderedScenes[0];
   const preloadUrl = firstSceneReady
-    ? nextLikelyPanorama(currentSceneId, hotspots, scenes)
+    ? nextLikelyPanorama(currentSceneId, hotspots, orderedScenes)
     : null;
+
+  const hasGroups = groups.length > 0;
+  const showGroupSelector = showGroups && hasGroups && showThumbs;
+  const [selectedGroupKey, setSelectedGroupKey] = useAutoSelectedGroupKey(
+    groups,
+    orderedScenes,
+    currentSceneId,
+  );
+
+  const stripScenes = useMemo(() => {
+    if (!hasGroups || !showGroups) return orderedScenes;
+    return filterScenesForGroupKey(orderedScenes, groups, selectedGroupKey);
+  }, [hasGroups, showGroups, orderedScenes, groups, selectedGroupKey]);
+
+  const showBottomChrome =
+    showThumbs &&
+    (showGroupSelector ||
+      (!hasGroups && orderedScenes.length > 1) ||
+      (hasGroups && stripScenes.length > 0));
 
   const showTopChrome =
     effectiveShowTitle ||
@@ -208,7 +244,7 @@ export function TourViewerShell({
     return () => window.removeEventListener("resize", publish);
   }, [embedMode]);
 
-  if (scenes.length === 0) {
+  if (orderedScenes.length === 0) {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-2 bg-neutral-950 px-6 text-center text-white">
         <p className="text-lg font-medium tracking-tight">
@@ -235,7 +271,7 @@ export function TourViewerShell({
       {/* z-0 isolates PSV's internal z-index:80 loader so overlays stay clickable */}
       <div className="absolute inset-0 z-0">
         <PanoramaViewer
-          scenes={scenes}
+          scenes={orderedScenes}
           hotspots={hotspots}
           startSceneId={startSceneId}
           currentSceneId={currentSceneId ?? undefined}
@@ -303,12 +339,24 @@ export function TourViewerShell({
         </div>
       ) : null}
 
-      {showThumbs ? (
-        <SceneStrip
-          scenes={scenes}
-          currentSceneId={currentSceneId}
-          onSelect={setCurrentSceneId}
-        />
+      {showBottomChrome ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/70 via-black/35 to-transparent pb-3 pt-10">
+          {showGroupSelector ? (
+            <GroupSelector
+              groups={groups}
+              scenes={orderedScenes}
+              selectedKey={selectedGroupKey}
+              onSelect={setSelectedGroupKey}
+            />
+          ) : null}
+          <SceneStrip
+            scenes={stripScenes}
+            currentSceneId={currentSceneId}
+            onSelect={setCurrentSceneId}
+            embedded
+            showWhenSingle={hasGroups && showGroups}
+          />
+        </div>
       ) : null}
     </div>
   );

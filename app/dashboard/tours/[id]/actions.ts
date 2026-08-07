@@ -17,9 +17,10 @@ import {
   clampContrast,
   clampSaturation,
 } from "@/lib/adjustments";
+import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
-import type { Scene } from "@/types";
+import type { Scene, SceneGroup } from "@/types";
 
 export type SceneActionResult = {
   error?: string;
@@ -83,6 +84,7 @@ export async function createScene(
     height: number;
     fileSize: number;
     position: number;
+    groupId?: string | null;
   },
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedTour(tourId);
@@ -91,6 +93,21 @@ export async function createScene(
   }
 
   const { supabase, tour } = owned;
+
+  let groupId: string | null = input.groupId ?? null;
+  if (groupId) {
+    const { data: group, error: groupError } = await supabase
+      .from("scene_groups")
+      .select("id, tour_id")
+      .eq("id", groupId)
+      .maybeSingle();
+    if (groupError) {
+      return { error: groupError.message };
+    }
+    if (!group || group.tour_id !== tourId) {
+      return { error: "Group not found." };
+    }
+  }
 
   const { error: insertError } = await supabase.from("scenes").insert({
     id: input.id,
@@ -103,6 +120,7 @@ export async function createScene(
     height: input.height,
     file_size: input.fileSize,
     position: input.position,
+    group_id: groupId,
   });
 
   if (insertError) {
@@ -232,17 +250,24 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
   }
 
   if (wasCover) {
-    const { data: nextCover, error: nextError } = await supabase
-      .from("scenes")
-      .select("id")
-      .eq("tour_id", scene.tour_id)
-      .order("position", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    const [{ data: remaining, error: remainingError }, { data: groups, error: groupsError }] =
+      await Promise.all([
+        supabase.from("scenes").select("*").eq("tour_id", scene.tour_id),
+        supabase
+          .from("scene_groups")
+          .select("*")
+          .eq("tour_id", scene.tour_id),
+      ]);
 
-    if (nextError) {
-      return { error: nextError.message };
+    if (remainingError) {
+      return { error: remainingError.message };
     }
+    if (groupsError) {
+      return { error: groupsError.message };
+    }
+
+    const ordered = sortScenesByGroupOrder(remaining ?? [], groups ?? []);
+    const nextCover = ordered[0] ?? null;
 
     const { error: coverError } = await supabase
       .from("tours")
@@ -258,8 +283,13 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
   return {};
 }
 
+/**
+ * Reorder scenes within one group (or the ungrouped bucket when groupId is null).
+ * Also assigns group_id so cross-group drops can commit via this action.
+ */
 export async function reorderScenes(
   tourId: string,
+  groupId: string | null,
   orderedSceneIds: string[],
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedTour(tourId);
@@ -268,6 +298,20 @@ export async function reorderScenes(
   }
 
   const { supabase } = owned;
+
+  if (groupId) {
+    const { data: group, error: groupError } = await supabase
+      .from("scene_groups")
+      .select("id, tour_id")
+      .eq("id", groupId)
+      .maybeSingle();
+    if (groupError) {
+      return { error: groupError.message };
+    }
+    if (!group || group.tour_id !== tourId) {
+      return { error: "Group not found." };
+    }
+  }
 
   const { data: existing, error: fetchError } = await supabase
     .from("scenes")
@@ -286,7 +330,11 @@ export async function reorderScenes(
     if (!scene) {
       return { error: "One or more scenes were not found." };
     }
-    upserts.push({ ...scene, position });
+    upserts.push({ ...scene, position, group_id: groupId });
+  }
+
+  if (upserts.length === 0) {
+    return {};
   }
 
   const { error } = await supabase.from("scenes").upsert(upserts);
@@ -296,6 +344,247 @@ export async function reorderScenes(
   }
 
   revalidateTourCaches(tourId, owned.tour?.slug);
+  return {};
+}
+
+export async function createGroup(
+  tourId: string,
+  name = "New group",
+): Promise<SceneActionResult & { group?: SceneGroup }> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.user || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const trimmed = name.trim() || "New group";
+  const { supabase } = owned;
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("scene_groups")
+    .select("position")
+    .eq("tour_id", tourId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  if (fetchError) {
+    return { error: fetchError.message };
+  }
+
+  const position = (existing?.[0]?.position ?? -1) + 1;
+
+  const { data: group, error } = await supabase
+    .from("scene_groups")
+    .insert({
+      tour_id: tourId,
+      name: trimmed,
+      position,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  return { group };
+}
+
+export async function renameGroup(
+  groupId: string,
+  name: string,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return { error: "Group name is required." };
+  }
+
+  const { data: group, error: groupError } = await supabase
+    .from("scene_groups")
+    .select("id, tour_id")
+    .eq("id", groupId)
+    .maybeSingle();
+
+  if (groupError) {
+    return { error: groupError.message };
+  }
+  if (!group) {
+    return { error: "Group not found." };
+  }
+
+  const owned = await requireOwnedTour(group.tour_id);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { error } = await supabase
+    .from("scene_groups")
+    .update({ name: trimmed })
+    .eq("id", groupId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(group.tour_id, owned.tour.slug);
+  return {};
+}
+
+/** Deletes the group only — scenes keep their rows with group_id set to null. */
+export async function deleteGroup(groupId: string): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const { data: group, error: groupError } = await supabase
+    .from("scene_groups")
+    .select("id, tour_id")
+    .eq("id", groupId)
+    .maybeSingle();
+
+  if (groupError) {
+    return { error: groupError.message };
+  }
+  if (!group) {
+    return { error: "Group not found." };
+  }
+
+  const owned = await requireOwnedTour(group.tour_id);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { error } = await supabase
+    .from("scene_groups")
+    .delete()
+    .eq("id", groupId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(group.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function reorderGroups(
+  tourId: string,
+  orderedGroupIds: string[],
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.user || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { supabase } = owned;
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("scene_groups")
+    .select("*")
+    .eq("tour_id", tourId);
+
+  if (fetchError) {
+    return { error: fetchError.message };
+  }
+
+  const byId = new Map((existing ?? []).map((group) => [group.id, group]));
+  const upserts: SceneGroup[] = [];
+
+  for (const [position, id] of orderedGroupIds.entries()) {
+    const group = byId.get(id);
+    if (!group) {
+      return { error: "One or more groups were not found." };
+    }
+    upserts.push({ ...group, position });
+  }
+
+  if (upserts.length === 0) {
+    return {};
+  }
+
+  const { error } = await supabase.from("scene_groups").upsert(upserts);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  return {};
+}
+
+export async function moveSceneToGroup(
+  sceneId: string,
+  groupId: string | null,
+  newPosition: number,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+  if (!scene) {
+    return { error: "Scene not found." };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  if (groupId) {
+    const { data: group, error: groupError } = await supabase
+      .from("scene_groups")
+      .select("id, tour_id")
+      .eq("id", groupId)
+      .maybeSingle();
+    if (groupError) {
+      return { error: groupError.message };
+    }
+    if (!group || group.tour_id !== scene.tour_id) {
+      return { error: "Group not found." };
+    }
+  }
+
+  const { error } = await supabase
+    .from("scenes")
+    .update({
+      group_id: groupId,
+      position: newPosition,
+    })
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
   return {};
 }
 

@@ -42,7 +42,7 @@ export default async function EmbedTourPage({ params }: PageProps) {
     notFound();
   }
 
-  const { tour, scenes, hotspots } = payload;
+  const { tour, scenes, groups, hotspots } = payload;
 
   return (
     <Suspense
@@ -50,13 +50,19 @@ export default async function EmbedTourPage({ params }: PageProps) {
         <TourViewerShell
           tour={tour}
           scenes={scenes}
+          groups={groups}
           hotspots={hotspots}
           trackViews
           embedMode
         />
       }
     >
-      <EmbedTourClient tour={tour} scenes={scenes} hotspots={hotspots} />
+      <EmbedTourClient
+        tour={tour}
+        scenes={scenes}
+        groups={groups}
+        hotspots={hotspots}
+      />
     </Suspense>
   );
 }

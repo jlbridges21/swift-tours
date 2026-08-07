@@ -4,6 +4,7 @@ import { TourEditor } from "@/components/editor/tour-editor";
 import {
   getTourById,
   listHotspotsForTour,
+  listSceneGroupsForTour,
   listScenesForTour,
 } from "@/lib/queries/tours";
 import { createClient } from "@/lib/supabase/server";
@@ -28,8 +29,9 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
     notFound();
   }
 
-  const [scenes, hotspots] = await Promise.all([
+  const [scenes, groups, hotspots] = await Promise.all([
     listScenesForTour(id),
+    listSceneGroupsForTour(id),
     listHotspotsForTour(id),
   ]);
 
@@ -37,6 +39,7 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
     <TourEditor
       tour={tour}
       scenes={scenes}
+      groups={groups}
       hotspots={hotspots}
       userId={user.id}
     />

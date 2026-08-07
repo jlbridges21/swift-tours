@@ -5,6 +5,7 @@ import { TourViewerShell } from "@/components/viewer/tour-viewer-shell";
 import {
   getTourById,
   listHotspotsForTour,
+  listSceneGroupsForTour,
   listScenesForTour,
 } from "@/lib/queries/tours";
 import { createClient } from "@/lib/supabase/server";
@@ -29,8 +30,9 @@ export default async function TourPreviewPage({ params }: PageProps) {
     notFound();
   }
 
-  const [scenes, hotspots] = await Promise.all([
+  const [scenes, groups, hotspots] = await Promise.all([
     listScenesForTour(id),
+    listSceneGroupsForTour(id),
     listHotspotsForTour(id),
   ]);
 
@@ -38,6 +40,7 @@ export default async function TourPreviewPage({ params }: PageProps) {
     <TourViewerShell
       tour={tour}
       scenes={scenes}
+      groups={groups}
       hotspots={hotspots}
       trackViews={false}
       showShare={false}

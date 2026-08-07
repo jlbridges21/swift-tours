@@ -53,11 +53,12 @@ import {
   isIntroEffect,
   isTransitionEffect,
 } from "@/lib/viewer-effects";
-import type { Hotspot, Scene, Tour } from "@/types";
+import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 type TourEditorProps = {
   tour: Tour;
   scenes: Scene[];
+  groups: SceneGroup[];
   hotspots: Hotspot[];
   userId: string;
 };
@@ -89,6 +90,7 @@ export function TourEditor(props: TourEditorProps) {
 function TourEditorInner({
   tour,
   scenes: initialScenes,
+  groups: initialGroups,
   hotspots: initialHotspots,
   userId,
 }: TourEditorProps) {
@@ -96,6 +98,7 @@ function TourEditorInner({
   const viewerRef = useRef<Viewer | null>(null);
 
   const [scenes, setScenes] = useState<EditorScene[]>(initialScenes);
+  const [groups, setGroups] = useState(initialGroups);
   const [hotspots, setHotspots] = useState(initialHotspots);
   const [title, setTitle] = useState(tour.title);
   const [nadir, setNadir] = useState<NadirTourFields>({
@@ -558,11 +561,13 @@ function TourEditorInner({
               tourId={tour.id}
               userId={userId}
               scenes={scenes}
+              groups={groups}
               activeSceneId={activeSceneId}
               onScenesChange={(next) => {
                 setScenes(next);
                 pruneHotspotsForScenes(next);
               }}
+              onGroupsChange={setGroups}
               onActiveSceneChange={setActiveSceneId}
               nadirType={nadir.nadir_type}
               nadirLogoPath={nadir.nadir_logo_path}

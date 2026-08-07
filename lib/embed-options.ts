@@ -21,6 +21,8 @@ export type EmbedChromeOptions = {
   showVr: boolean;
   /** When false, skip little-planet intro. */
   showIntro: boolean;
+  /** When false, hide the group selector even if the tour has groups. */
+  showGroups: boolean;
 };
 
 export const DEFAULT_EMBED_CHROME: EmbedChromeOptions = {
@@ -34,6 +36,7 @@ export const DEFAULT_EMBED_CHROME: EmbedChromeOptions = {
   showGyro: true,
   showVr: true,
   showIntro: true,
+  showGroups: true,
 };
 
 function isOff(value: string | null | undefined): boolean {
@@ -78,6 +81,7 @@ export function parseEmbedSearchParams(
     showGyro: !isOff(searchParams.get("gyro")),
     showVr: !isOff(searchParams.get("vr")),
     showIntro: !isOff(searchParams.get("intro")),
+    showGroups: !isOff(searchParams.get("groups")),
   };
 }
 

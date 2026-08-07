@@ -114,7 +114,7 @@ function SceneListItem({
     next.splice(target, 0, removed);
 
     startTransition(async () => {
-      const result = await reorderScenes(tourId, next);
+      const result = await reorderScenes(tourId, scene.group_id, next);
       if (result.error) {
         toast.error(result.error);
         return;

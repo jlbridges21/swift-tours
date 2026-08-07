@@ -12,7 +12,12 @@ import {
   isIntroEffect,
   isTransitionEffect,
 } from "@/lib/viewer-effects";
-import type { HotspotInsert, SceneInsert, TourInsert } from "@/types";
+import type {
+  HotspotInsert,
+  SceneGroupInsert,
+  SceneInsert,
+  TourInsert,
+} from "@/types";
 
 export type ActionResult = {
   error?: string;
@@ -468,6 +473,42 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
   };
 
   try {
+    const { data: originalGroups, error: groupsError } = await supabase
+      .from("scene_groups")
+      .select("*")
+      .eq("tour_id", id)
+      .order("position", { ascending: true });
+
+    if (groupsError) {
+      await rollback();
+      return { error: groupsError.message };
+    }
+
+    const groupIdMap = new Map<string, string>();
+    const groups = originalGroups ?? [];
+
+    if (groups.length > 0) {
+      const groupInserts: SceneGroupInsert[] = groups.map((group) => {
+        const newGroupId = crypto.randomUUID();
+        groupIdMap.set(group.id, newGroupId);
+        return {
+          id: newGroupId,
+          tour_id: newTourId,
+          name: group.name,
+          position: group.position,
+        };
+      });
+
+      const { error: insertGroupsError } = await supabase
+        .from("scene_groups")
+        .insert(groupInserts);
+
+      if (insertGroupsError) {
+        await rollback();
+        return { error: insertGroupsError.message };
+      }
+    }
+
     const { data: originalScenes, error: scenesError } = await supabase
       .from("scenes")
       .select("*")
@@ -504,6 +545,9 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           position: scene.position,
           initial_yaw: scene.initial_yaw,
           initial_pitch: scene.initial_pitch,
+          group_id: scene.group_id
+            ? (groupIdMap.get(scene.group_id) ?? null)
+            : null,
         };
       });
 
