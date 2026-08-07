@@ -72,6 +72,10 @@ export async function createScene(
     name: string;
     storagePath: string;
     thumbnailPath: string;
+    compatPath?: string | null;
+    width: number;
+    height: number;
+    fileSize: number;
     position: number;
   },
 ): Promise<SceneActionResult> {
@@ -88,6 +92,10 @@ export async function createScene(
     name: input.name,
     storage_path: input.storagePath,
     thumbnail_path: input.thumbnailPath,
+    compat_path: input.compatPath ?? null,
+    width: input.width,
+    height: input.height,
+    file_size: input.fileSize,
     position: input.position,
   });
 
@@ -172,7 +180,7 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
 
   const { data: scene, error: sceneError } = await supabase
     .from("scenes")
-    .select("id, tour_id, storage_path, thumbnail_path")
+    .select("id, tour_id, storage_path, thumbnail_path, compat_path")
     .eq("id", sceneId)
     .maybeSingle();
 
@@ -191,6 +199,9 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
 
   // Delete storage objects before the row — paths are lost once the row is gone.
   const paths = [scene.storage_path];
+  if (scene.compat_path) {
+    paths.push(scene.compat_path);
+  }
   if (scene.thumbnail_path) {
     paths.push(scene.thumbnail_path);
   }

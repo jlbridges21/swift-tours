@@ -1,6 +1,6 @@
 /**
  * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql (+ 0002–0004).
+ * supabase/migrations/0001_initial_schema.sql (+ 0002–0005).
  *
  * Overwrite this file after applying migrations:
  *
@@ -87,6 +87,10 @@ export type Database = {
           name: string;
           storage_path: string;
           thumbnail_path: string | null;
+          compat_path: string | null;
+          width: number | null;
+          height: number | null;
+          file_size: number | null;
           position: number;
           initial_yaw: number;
           initial_pitch: number;
@@ -98,6 +102,10 @@ export type Database = {
           name?: string;
           storage_path: string;
           thumbnail_path?: string | null;
+          compat_path?: string | null;
+          width?: number | null;
+          height?: number | null;
+          file_size?: number | null;
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
@@ -109,6 +117,10 @@ export type Database = {
           name?: string;
           storage_path?: string;
           thumbnail_path?: string | null;
+          compat_path?: string | null;
+          width?: number | null;
+          height?: number | null;
+          file_size?: number | null;
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;

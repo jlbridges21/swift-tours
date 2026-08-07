@@ -26,6 +26,10 @@ import {
 
 import { publicUrl } from "@/lib/storage";
 import {
+  getMaxTextureSize,
+  resolvePanoramaPath,
+} from "@/lib/gl-capabilities";
+import {
   buildHotspotMarkerHtml,
   clampHotspotSize,
   escapeHtml,
@@ -47,6 +51,9 @@ export type PanoramaViewerScene = Pick<
   | "name"
   | "storage_path"
   | "thumbnail_path"
+  | "compat_path"
+  | "width"
+  | "height"
   | "initial_yaw"
   | "initial_pitch"
 >;
@@ -172,6 +179,32 @@ function resolveStartId(
   return scenes[0].id;
 }
 
+let loggedMaxTextureSize = false;
+const loggedPanoramaTier = new Set<string>();
+
+function panoramaUrlForScene(scene: PanoramaViewerScene): string {
+  const maxTextureSize = getMaxTextureSize();
+  const { path, tier } = resolvePanoramaPath(scene, maxTextureSize);
+
+  if (
+    process.env.NODE_ENV === "development" &&
+    !loggedPanoramaTier.has(scene.id)
+  ) {
+    loggedPanoramaTier.add(scene.id);
+    if (!loggedMaxTextureSize) {
+      loggedMaxTextureSize = true;
+      console.info(
+        `[panorama] GL_MAX_TEXTURE_SIZE=${maxTextureSize}; choosing full vs compat per scene`,
+      );
+    }
+    console.info(
+      `[panorama] scene ${scene.id}: tier=${tier} width=${scene.width ?? "unknown"} path=${path}`,
+    );
+  }
+
+  return publicUrl(path);
+}
+
 function buildNodes(
   scenes: PanoramaViewerScene[],
   hotspots: PanoramaViewerHotspot[],
@@ -189,16 +222,19 @@ function buildNodes(
       initialPitch: scene.initial_pitch,
     };
 
+    const panorama = panoramaUrlForScene(scene);
+    const thumbnail = scene.thumbnail_path
+      ? publicUrl(scene.thumbnail_path)
+      : undefined;
+
     // Edit mode: no VirtualTour links (they'd navigate on click). Markers are
     // managed separately via MarkersPlugin add/update/remove.
     if (mode === "edit") {
       return {
         id: scene.id,
         name: scene.name,
-        panorama: publicUrl(scene.storage_path),
-        thumbnail: scene.thumbnail_path
-          ? publicUrl(scene.thumbnail_path)
-          : undefined,
+        panorama,
+        thumbnail,
         links: [],
         markers: [],
         data: nodeData,
@@ -215,10 +251,8 @@ function buildNodes(
     return {
       id: scene.id,
       name: scene.name,
-      panorama: publicUrl(scene.storage_path),
-      thumbnail: scene.thumbnail_path
-        ? publicUrl(scene.thumbnail_path)
-        : undefined,
+      panorama,
+      thumbnail,
       links: [] as VirtualTourLink[],
       markers,
       data: nodeData,
@@ -423,7 +457,7 @@ export function PanoramaViewer({
       loadTimeoutId = setTimeout(() => {
         if (cancelled || tour.getCurrentNode()) return;
         setLoadTimedOut(true);
-      }, 30_000);
+      }, 60_000);
     };
 
     const handleNodeChanged = (event: {

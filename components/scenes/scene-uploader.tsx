@@ -7,12 +7,12 @@ import { toast } from "sonner";
 import { createScene } from "@/app/dashboard/tours/[id]/actions";
 import { processPanorama, validatePanorama } from "@/lib/image";
 import { createClient } from "@/lib/supabase/client";
-import { scenePath, thumbPath } from "@/lib/storage";
+import { compatPath, scenePath, thumbPath } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 type UploadStage =
   | "queued"
-  | "compressing"
+  | "preparing"
   | "uploading"
   | "saving"
   | "done"
@@ -38,7 +38,7 @@ const CONCURRENCY = 3;
 
 const STAGE_LABEL: Record<UploadStage, string> = {
   queued: "Queued",
-  compressing: "Compressing",
+  preparing: "Preparing",
   uploading: "Uploading",
   saving: "Saving",
   done: "Done",
@@ -105,6 +105,7 @@ export function SceneUploader({
       const outcomes = { succeeded: 0, failed: 0 };
 
       await mapPool(batch, CONCURRENCY, async (item) => {
+        const uploadedPaths: string[] = [];
         try {
           const validation = await validatePanorama(item.file);
           if (!validation.ok) {
@@ -120,45 +121,85 @@ export function SceneUploader({
             updateItem(item.key, { warning: validation.warning });
           }
 
-          updateItem(item.key, { stage: "compressing" });
-          const { full, thumb } = await processPanorama(item.file);
+          updateItem(item.key, { stage: "preparing" });
+          const processed = await processPanorama(item.file, {
+            width: validation.width!,
+            height: validation.height!,
+          });
 
-          const storageFull = scenePath(userId, tourId, item.sceneId);
+          const storageFull = scenePath(
+            userId,
+            tourId,
+            item.sceneId,
+            processed.extension,
+          );
           const storageThumb = thumbPath(userId, tourId, item.sceneId);
+          const storageCompat =
+            processed.compat != null
+              ? compatPath(userId, tourId, item.sceneId)
+              : null;
           const supabase = createClient();
 
-          // supabase-js has no onUploadProgress — track stage labels instead.
-          // Byte-level progress would require raw XHR against a signed URL.
           updateItem(item.key, { stage: "uploading" });
 
-          const uploadOpts = {
-            contentType: "image/jpeg",
-            cacheControl: "31536000",
-            upsert: false,
-          } as const;
+          // Original bytes uploaded as-is — no re-encode (preserves quality).
+          const originalUpload = await supabase.storage
+            .from("panoramas")
+            .upload(storageFull, processed.original, {
+              contentType: processed.contentType,
+              cacheControl: "31536000",
+              upsert: false,
+            });
+          uploadedPaths.push(storageFull);
 
-          const [fullUpload, thumbUpload] = await Promise.all([
-            supabase.storage
-              .from("panoramas")
-              .upload(storageFull, full, uploadOpts),
-            supabase.storage
-              .from("panoramas")
-              .upload(storageThumb, thumb, uploadOpts),
-          ]);
-
-          if (fullUpload.error || thumbUpload.error) {
-            await supabase.storage
-              .from("panoramas")
-              .remove([storageFull, storageThumb]);
+          if (originalUpload.error) {
+            await supabase.storage.from("panoramas").remove(uploadedPaths);
             outcomes.failed += 1;
             updateItem(item.key, {
               stage: "error",
-              error:
-                fullUpload.error?.message ??
-                thumbUpload.error?.message ??
-                "Upload failed.",
+              error: originalUpload.error.message,
             });
             return;
+          }
+
+          const thumbUpload = await supabase.storage
+            .from("panoramas")
+            .upload(storageThumb, processed.thumb, {
+              contentType: "image/jpeg",
+              cacheControl: "31536000",
+              upsert: false,
+            });
+          uploadedPaths.push(storageThumb);
+
+          if (thumbUpload.error) {
+            await supabase.storage.from("panoramas").remove(uploadedPaths);
+            outcomes.failed += 1;
+            updateItem(item.key, {
+              stage: "error",
+              error: thumbUpload.error.message,
+            });
+            return;
+          }
+
+          if (processed.compat && storageCompat) {
+            const compatUpload = await supabase.storage
+              .from("panoramas")
+              .upload(storageCompat, processed.compat, {
+                contentType: "image/jpeg",
+                cacheControl: "31536000",
+                upsert: false,
+              });
+            uploadedPaths.push(storageCompat);
+
+            if (compatUpload.error) {
+              await supabase.storage.from("panoramas").remove(uploadedPaths);
+              outcomes.failed += 1;
+              updateItem(item.key, {
+                stage: "error",
+                error: compatUpload.error.message,
+              });
+              return;
+            }
           }
 
           updateItem(item.key, { stage: "saving" });
@@ -167,13 +208,15 @@ export function SceneUploader({
             name: nameFromFile(item.file),
             storagePath: storageFull,
             thumbnailPath: storageThumb,
+            compatPath: storageCompat,
+            width: processed.width,
+            height: processed.height,
+            fileSize: processed.fileSize,
             position: item.position,
           });
 
           if (result.error) {
-            await supabase.storage
-              .from("panoramas")
-              .remove([storageFull, storageThumb]);
+            await supabase.storage.from("panoramas").remove(uploadedPaths);
             outcomes.failed += 1;
             updateItem(item.key, { stage: "error", error: result.error });
             return;
@@ -182,6 +225,10 @@ export function SceneUploader({
           outcomes.succeeded += 1;
           updateItem(item.key, { stage: "done" });
         } catch (err) {
+          if (uploadedPaths.length > 0) {
+            const supabase = createClient();
+            await supabase.storage.from("panoramas").remove(uploadedPaths);
+          }
           outcomes.failed += 1;
           updateItem(item.key, {
             stage: "error",
@@ -246,7 +293,7 @@ export function SceneUploader({
       >
         <p className="text-sm font-medium">Drop 360° photos here</p>
         <p className="text-xs text-muted-foreground">
-          JPEG or PNG · up to 100MB · resized to 4096×2048
+          JPEG or PNG · up to 200MB · original quality preserved
         </p>
         <button
           type="button"
@@ -283,7 +330,7 @@ export function SceneUploader({
                 </span>
               </div>
               {item.stage === "uploading" ||
-              item.stage === "compressing" ||
+              item.stage === "preparing" ||
               item.stage === "saving" ? (
                 <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
                   <div className="h-full w-1/3 animate-pulse rounded-full bg-foreground/40" />

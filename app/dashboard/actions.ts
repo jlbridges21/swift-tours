@@ -216,7 +216,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   // Collect storage paths before the row (and cascade) disappears.
   const { data: scenes, error: scenesError } = await supabase
     .from("scenes")
-    .select("storage_path, thumbnail_path")
+    .select("storage_path, thumbnail_path, compat_path")
     .eq("tour_id", id);
 
   if (scenesError) {
@@ -226,6 +226,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   const paths: string[] = [];
   for (const scene of scenes ?? []) {
     if (scene.storage_path) paths.push(scene.storage_path);
+    if (scene.compat_path) paths.push(scene.compat_path);
     if (scene.thumbnail_path) paths.push(scene.thumbnail_path);
   }
 
@@ -333,6 +334,10 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           name: scene.name,
           storage_path: scene.storage_path,
           thumbnail_path: scene.thumbnail_path,
+          compat_path: scene.compat_path,
+          width: scene.width,
+          height: scene.height,
+          file_size: scene.file_size,
           position: scene.position,
           initial_yaw: scene.initial_yaw,
           initial_pitch: scene.initial_pitch,
@@ -377,11 +382,26 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           copiedStoragePaths.push(newThumbnailPath);
         }
 
+        let newCompatPath: string | null = null;
+        if (scene.compat_path) {
+          newCompatPath = `${user.id}/${newTourId}/${newSceneId}_4k${extensionFromPath(scene.compat_path)}`;
+          const { error: compatCopyError } = await supabase.storage
+            .from("panoramas")
+            .copy(scene.compat_path, newCompatPath);
+
+          if (compatCopyError) {
+            await rollback();
+            return { error: compatCopyError.message };
+          }
+          copiedStoragePaths.push(newCompatPath);
+        }
+
         const { error: updateSceneError } = await supabase
           .from("scenes")
           .update({
             storage_path: newStoragePath,
             thumbnail_path: newThumbnailPath,
+            compat_path: newCompatPath,
           })
           .eq("id", newSceneId);
 

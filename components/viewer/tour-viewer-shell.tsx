@@ -9,6 +9,7 @@ import { SceneStrip } from "@/components/viewer/scene-strip";
 import { ShareButton } from "@/components/viewer/share-button";
 import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
 import { useAutorotate } from "@/components/viewer/use-autorotate";
+import { resolvePanoramaPath } from "@/lib/gl-capabilities";
 import { publicUrl } from "@/lib/storage";
 import type { Hotspot, Scene, Tour } from "@/types";
 
@@ -70,7 +71,9 @@ function nextLikelyPanorama(
   );
   if (!firstLink?.target_scene_id) return null;
   const target = scenes.find((s) => s.id === firstLink.target_scene_id);
-  return target ? publicUrl(target.storage_path) : null;
+  if (!target) return null;
+  const { path } = resolvePanoramaPath(target);
+  return publicUrl(path);
 }
 
 function postEmbedMessage(payload: Record<string, unknown>) {
