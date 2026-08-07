@@ -301,9 +301,15 @@ export function PanoramaViewer({
   const onPanoramaClickRef = useRef(onPanoramaClick);
   const onMarkerSelectRef = useRef(onMarkerSelect);
   const onViewerReadyRef = useRef(onViewerReady);
+  /** True while the initial setNodes→setCurrentNode load is in flight. */
+  const bootstrappingRef = useRef(false);
+  /** Scene id the controlled effect should not re-request during bootstrap. */
+  const bootstrapSceneIdRef = useRef<string | null>(null);
 
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
   const [infoOverlay, setInfoOverlay] = useState<InfoOverlay | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   modeRef.current = mode;
   onSceneChangeRef.current = onSceneChange;
@@ -327,11 +333,18 @@ export function PanoramaViewer({
     }
 
     setLoadError(null);
+    setLoadTimedOut(false);
     setInfoOverlay(null);
 
     const nodes = buildNodes(scenes, hotspots, mode);
     const startId = resolveStartId(scenes, currentSceneId ?? startSceneId);
+    let cancelled = false;
+    let loadTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
+    // Create the viewer WITHOUT feeding nodes into plugin config. Plugin.init()
+    // would otherwise call setNodes→setCurrentNode before our React effects run;
+    // the controlled currentSceneId effect then aborts that in-flight load
+    // (ERR_ABORTED), which is the first-scene hang under Strict Mode.
     const viewer = new Viewer({
       container: containerRef.current,
       navbar: ["zoom", "move", "fullscreen"],
@@ -342,14 +355,11 @@ export function PanoramaViewer({
       touchmoveTwoFingers: false,
       plugins: [
         MarkersPlugin.withConfig({
-          // Marker clicks fire select-marker only — not also viewer click.
           clickEventOnMarker: false,
         }),
         VirtualTourPlugin.withConfig({
           dataMode: "client",
           positionMode: "manual",
-          nodes,
-          startNodeId: startId,
         }),
       ],
     });
@@ -368,27 +378,41 @@ export function PanoramaViewer({
       return;
     }
 
-    if (mode === "edit" && currentSceneId) {
-      syncEditMarkers(
-        markersPlugin,
-        hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
-        highlightedHotspotId,
-      );
-    }
+    const clearLoadTimeout = () => {
+      if (loadTimeoutId) {
+        clearTimeout(loadTimeoutId);
+        loadTimeoutId = null;
+      }
+    };
+
+    const armLoadTimeout = () => {
+      clearLoadTimeout();
+      loadTimeoutId = setTimeout(() => {
+        if (cancelled || tour.getCurrentNode()) return;
+        setLoadTimedOut(true);
+      }, 30_000);
+    };
 
     const handleNodeChanged = (event: {
       node: VirtualTourNode;
       data?: { fromLink?: unknown };
     }) => {
+      if (cancelled) return;
+      bootstrappingRef.current = false;
+      bootstrapSceneIdRef.current = null;
+      clearLoadTimeout();
+      setLoadTimedOut(false);
+      setLoadError(null);
       setInfoOverlay(null);
       onSceneChangeRef.current?.(event.node.id);
-      // Apply stored initial view on first load / direct selection.
-      // Skip when fromLink is set so link navigation keeps spatial continuity.
       applyNodeInitialView(viewer, event.node, event.data?.fromLink);
     };
     tour.addEventListener("node-changed", handleNodeChanged);
 
     const handlePanoramaError = (event: { error: Error }) => {
+      if (cancelled) return;
+      bootstrappingRef.current = false;
+      clearLoadTimeout();
       setLoadError(
         event.error.message || "Failed to load panorama. Check the image path.",
       );
@@ -426,14 +450,42 @@ export function PanoramaViewer({
     };
     markersPlugin.addEventListener("unselect-marker", handleUnselectMarker);
 
+    if (mode === "edit" && currentSceneId) {
+      syncEditMarkers(
+        markersPlugin,
+        hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
+        highlightedHotspotId,
+      );
+    }
+
+    // Listeners are attached — now start the tour in one shot.
+    bootstrappingRef.current = true;
+    bootstrapSceneIdRef.current = startId;
+    armLoadTimeout();
+    tour.setNodes(nodes, startId);
+
     return () => {
+      cancelled = true;
+      clearLoadTimeout();
+      bootstrappingRef.current = false;
+      bootstrapSceneIdRef.current = null;
+      // Invalidate in-flight setCurrentNode chains before destroy so they
+      // abort cleanly instead of calling loadNode on a deleted datasource
+      // (React Strict Mode remount).
+      const tourState = tour as unknown as {
+        state?: { loadingNode?: string | null };
+      };
+      if (tourState.state) {
+        tourState.state.loadingNode = null;
+      }
       viewer.destroy();
       viewerRef.current = null;
       nodesKeyRef.current = "";
     };
-    // Intentionally only recreate when going between empty ↔ non-empty.
+    // Recreate on empty↔non-empty and explicit retry. Scene/hotspot updates
+    // go through the nodes effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasScenes]);
+  }, [hasScenes, retryNonce]);
 
   // Update tour nodes when scenes (or view-mode hotspot graph) change.
   useEffect(() => {
@@ -452,12 +504,14 @@ export function PanoramaViewer({
     const nextStart =
       currentId && nodes.some((node) => node.id === currentId)
         ? currentId
-        : resolveStartId(scenes, startSceneId);
+        : resolveStartId(scenes, currentSceneId ?? startSceneId);
 
+    bootstrappingRef.current = true;
+    bootstrapSceneIdRef.current = nextStart;
     tour.setNodes(nodes, nextStart);
-  }, [scenes, hotspots, startSceneId, hasScenes, mode]);
+  }, [scenes, hotspots, startSceneId, currentSceneId, hasScenes, mode]);
 
-  // Controlled scene selection.
+  // Controlled scene selection (user / parent-driven).
   useEffect(() => {
     if (!currentSceneId || !hasScenes) return;
 
@@ -469,6 +523,16 @@ export function PanoramaViewer({
 
     const currentId = tour.getCurrentNode()?.id;
     if (currentId === currentSceneId) return;
+
+    // Initial setNodes(startId) already requested this node. Calling
+    // setCurrentNode again aborts the in-flight texture load (ERR_ABORTED)
+    // and is the first-scene hang under React Strict Mode.
+    if (
+      bootstrappingRef.current &&
+      bootstrapSceneIdRef.current === currentSceneId
+    ) {
+      return;
+    }
 
     void tour.setCurrentNode(currentSceneId);
   }, [currentSceneId, hasScenes]);
@@ -526,6 +590,12 @@ export function PanoramaViewer({
     };
   }, [mode, hasScenes]);
 
+  function handleRetry() {
+    setLoadError(null);
+    setLoadTimedOut(false);
+    setRetryNonce((n) => n + 1);
+  }
+
   if (!hasScenes) {
     return (
       <div
@@ -538,6 +608,8 @@ export function PanoramaViewer({
       </div>
     );
   }
+
+  const showFailure = Boolean(loadError) || loadTimedOut;
 
   return (
     <div
@@ -553,14 +625,24 @@ export function PanoramaViewer({
     >
       <div ref={containerRef} className="size-full" style={viewerHostStyle} />
 
-      {loadError ? (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-6 text-center text-sm text-white">
-          {loadError}
+      {showFailure ? (
+        <div className="absolute inset-0 z-[90] flex flex-col items-center justify-center gap-3 bg-black/80 p-6 text-center text-sm text-white">
+          <p>
+            {loadError ||
+              "This panorama is taking too long to load. Check your connection and try again."}
+          </p>
+          <button
+            type="button"
+            className="min-h-11 rounded-md bg-white px-4 text-sm font-medium text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            onClick={handleRetry}
+          >
+            Retry
+          </button>
         </div>
       ) : null}
 
       {mode === "view" && infoOverlay ? (
-        <div className="absolute bottom-4 left-4 z-10 max-w-sm rounded-lg bg-background/95 p-3 text-sm shadow-md ring-1 ring-foreground/10">
+        <div className="absolute bottom-4 left-4 z-[90] max-w-sm rounded-lg bg-background/95 p-3 text-sm shadow-md ring-1 ring-foreground/10">
           {infoOverlay.label ? (
             <p className="font-medium">{infoOverlay.label}</p>
           ) : null}

@@ -62,9 +62,12 @@ export function TourViewerShell({
   const [currentSceneId, setCurrentSceneId] = useState<string | null>(
     startSceneId ?? null,
   );
+  const [firstSceneReady, setFirstSceneReady] = useState(false);
 
   const currentScene = scenes.find((s) => s.id === currentSceneId) ?? scenes[0];
-  const preloadUrl = nextLikelyPanorama(currentSceneId, hotspots, scenes);
+  const preloadUrl = firstSceneReady
+    ? nextLikelyPanorama(currentSceneId, hotspots, scenes)
+    : null;
 
   useEffect(() => {
     if (!preloadUrl) return;
@@ -102,7 +105,8 @@ export function TourViewerShell({
         </div>
       ) : null}
 
-      <div className="absolute inset-0">
+      {/* z-0 isolates PSV's internal z-index:80 loader so overlays stay clickable */}
+      <div className="absolute inset-0 z-0">
         <PanoramaViewer
           scenes={scenes}
           hotspots={hotspots}
@@ -110,7 +114,10 @@ export function TourViewerShell({
           currentSceneId={currentSceneId ?? undefined}
           mode="view"
           className="h-full w-full"
-          onSceneChange={setCurrentSceneId}
+          onSceneChange={(id) => {
+            setCurrentSceneId(id);
+            setFirstSceneReady(true);
+          }}
           ariaLabel={
             currentScene
               ? `360° panorama: ${currentScene.name}`
