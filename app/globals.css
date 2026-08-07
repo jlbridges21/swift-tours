@@ -164,6 +164,14 @@
   border-radius: 9999px;
 }
 
+/* Edit-mode marker drag affordances (MarkersPlugin elements). */
+.st-editor-markers .psv-marker {
+  cursor: grab;
+}
+.st-editor-markers .psv-marker.st-marker-dragging {
+  cursor: grabbing;
+}
+
 @keyframes st-hotspot-pulse {
   0%,
   100% {

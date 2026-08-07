@@ -14,9 +14,11 @@ import {
 } from "@/app/dashboard/tours/[id]/actions";
 import { HotspotPanel } from "@/components/editor/hotspot-panel";
 import {
-  PlaceHotspotPanel,
-  type PlaceHotspotDraft,
-} from "@/components/editor/place-hotspot-panel";
+  HotspotToolbar,
+  placingBannerText,
+  useAutoReturnLinkPreference,
+  type PlaceableHotspotType,
+} from "@/components/editor/hotspot-toolbar";
 import { SceneSidebar } from "@/components/editor/scene-sidebar";
 import {
   SaveStatusIndicator,
@@ -56,6 +58,13 @@ function reciprocalYaw(yaw: number): number {
   return normalizeYaw(yaw + Math.PI);
 }
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(
+    target.closest("input, textarea, select, [contenteditable=true]"),
+  );
+}
+
 export function TourEditor(props: TourEditorProps) {
   return (
     <SaveStatusProvider>
@@ -82,9 +91,13 @@ function TourEditorInner({
   const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(
     null,
   );
-  const [movingHotspotId, setMovingHotspotId] = useState<string | null>(null);
-  const [placeDraft, setPlaceDraft] = useState<PlaceHotspotDraft | null>(null);
+  const [placingType, setPlacingType] = useState<PlaceableHotspotType | null>(
+    null,
+  );
+  const [autoReturnLink, setAutoReturnLink] = useAutoReturnLinkPreference();
   const [embedOpen, setEmbedOpen] = useState(false);
+  const [infoPopoverOpen, setInfoPopoverOpen] = useState(false);
+  const [closeInfoPopoverNonce, setCloseInfoPopoverNonce] = useState(0);
 
   useEffect(() => {
     setScenes(initialScenes);
@@ -110,29 +123,34 @@ function TourEditorInner({
 
   useEffect(() => {
     setSelectedHotspotId(null);
-    setMovingHotspotId(null);
-    setPlaceDraft(null);
+    setPlacingType(null);
   }, [activeSceneId]);
 
-  // Esc cancels armed move mode.
+  // Escape: cancel placing → close popover → deselect.
   useEffect(() => {
-    if (!movingHotspotId) return;
-
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setMovingHotspotId(null);
+      if (event.key !== "Escape") return;
+      if (isTypingTarget(event.target)) return;
+
+      if (placingType) {
+        event.preventDefault();
+        setPlacingType(null);
+        return;
+      }
+      if (infoPopoverOpen) {
+        event.preventDefault();
+        setCloseInfoPopoverNonce((n) => n + 1);
+        return;
+      }
+      if (selectedHotspotId) {
+        event.preventDefault();
+        setSelectedHotspotId(null);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [movingHotspotId]);
-
-  useEffect(() => {
-    if (movingHotspotId && !hotspots.some((h) => h.id === movingHotspotId)) {
-      setMovingHotspotId(null);
-    }
-  }, [hotspots, movingHotspotId]);
+  }, [placingType, infoPopoverOpen, selectedHotspotId]);
 
   const activeScene = useMemo(
     () => scenes.find((scene) => scene.id === activeSceneId) ?? null,
@@ -215,62 +233,50 @@ function TourEditorInner({
   function handlePanoramaClick(payload: PanoramaClickPayload) {
     if (!activeSceneId) return;
 
-    // Marker clicks are handled via onMarkerSelect (clickEventOnMarker: false).
+    // Marker clicks arrive via onMarkerSelect, not here.
     if (payload.markerId) {
       setSelectedHotspotId(payload.markerId);
-      setPlaceDraft(null);
-      // Do not disarm move on marker click — only Esc / Move toggle / successful move.
       return;
     }
 
-    // Armed one-shot reposition — only when explicitly Move-armed.
-    if (movingHotspotId) {
-      const moving = hotspots.find((hotspot) => hotspot.id === movingHotspotId);
-      if (moving && moving.scene_id === activeSceneId) {
-        void moveHotspot(moving, payload.yaw, payload.pitch);
+    if (placingType) {
+      void placeHotspot(placingType, payload.yaw, payload.pitch);
+      return;
+    }
+
+    // IDLE: deselect only — never create or move.
+    setSelectedHotspotId(null);
+  }
+
+  async function placeHotspot(
+    type: PlaceableHotspotType,
+    yaw: number,
+    pitch: number,
+  ) {
+    if (!activeSceneId) return;
+
+    if (type === "link") {
+      const other = scenes.find((scene) => scene.id !== activeSceneId);
+      if (!other) {
+        toast.error("Add another scene before creating link hotspots");
+        setPlacingType(null);
+        return;
       }
-      setMovingHotspotId(null);
-      setPlaceDraft(null);
-      return;
+      await createLinkHotspotAt(yaw, pitch, other.id, autoReturnLink);
+    } else {
+      await createInfoHotspotAt(yaw, pitch);
     }
 
-    // Default: always open create panel on empty panorama clicks.
-    setPlaceDraft({
-      yaw: payload.yaw,
-      pitch: payload.pitch,
-      clientX: payload.clientX,
-      clientY: payload.clientY,
-    });
+    setPlacingType(null);
   }
 
-  function toggleMove(hotspotId: string) {
-    setPlaceDraft(null);
-    setSelectedHotspotId(hotspotId);
-    setMovingHotspotId((current) =>
-      current === hotspotId ? null : hotspotId,
-    );
-  }
-
-  async function moveHotspot(hotspot: Hotspot, yaw: number, pitch: number) {
-    const previous = hotspots;
-    const next = hotspots.map((item) =>
-      item.id === hotspot.id ? { ...item, yaw, pitch } : item,
-    );
-    setHotspots(next);
-
-    const ok = await run(() => updateHotspot(hotspot.id, { yaw, pitch }));
-    if (!ok) {
-      setHotspots(previous);
-      toast.error("Could not move hotspot");
-    }
-  }
-
-  async function createLinkHotspot(input: {
-    targetSceneId: string;
-    label: string;
-    addReturnLink: boolean;
-  }) {
-    if (!activeSceneId || !placeDraft) return;
+  async function createLinkHotspotAt(
+    yaw: number,
+    pitch: number,
+    targetSceneId: string,
+    addReturnLink: boolean,
+  ) {
+    if (!activeSceneId) return;
 
     const forwardId = crypto.randomUUID();
     const linkShape = isHotspotShape(tour.default_hotspot_shape)
@@ -280,11 +286,11 @@ function TourEditorInner({
     const forward: Hotspot = {
       id: forwardId,
       scene_id: activeSceneId,
-      target_scene_id: input.targetSceneId,
+      target_scene_id: targetSceneId,
       type: "link",
-      yaw: placeDraft.yaw,
-      pitch: placeDraft.pitch,
-      label: input.label || null,
+      yaw,
+      pitch,
+      label: null,
       content: null,
       style_shape: linkShape,
       style_color: linkColor,
@@ -297,15 +303,15 @@ function TourEditorInner({
     const created: Hotspot[] = [forward];
     let returnHotspot: Hotspot | null = null;
 
-    if (input.addReturnLink) {
+    if (addReturnLink) {
       returnHotspot = {
         id: crypto.randomUUID(),
-        scene_id: input.targetSceneId,
+        scene_id: targetSceneId,
         target_scene_id: activeSceneId,
         type: "link",
-        yaw: reciprocalYaw(placeDraft.yaw),
+        yaw: reciprocalYaw(yaw),
         pitch: 0,
-        label: input.label || null,
+        label: null,
         content: null,
         style_shape: linkShape,
         style_color: linkColor,
@@ -339,8 +345,6 @@ function TourEditorInner({
       return;
     }
 
-    setPlaceDraft(null);
-
     if (returnHotspot) {
       const okReturn = await run(() =>
         createHotspot(returnHotspot!.scene_id, {
@@ -362,8 +366,8 @@ function TourEditorInner({
     }
   }
 
-  async function createInfoHotspot(input: { label: string; content: string }) {
-    if (!activeSceneId || !placeDraft) return;
+  async function createInfoHotspotAt(yaw: number, pitch: number) {
+    if (!activeSceneId) return;
 
     const id = crypto.randomUUID();
     const hotspot: Hotspot = {
@@ -371,10 +375,10 @@ function TourEditorInner({
       scene_id: activeSceneId,
       target_scene_id: null,
       type: "info",
-      yaw: placeDraft.yaw,
-      pitch: placeDraft.pitch,
-      label: input.label || null,
-      content: input.content || null,
+      yaw,
+      pitch,
+      label: null,
+      content: null,
       style_shape: DEFAULT_INFO_SHAPE,
       style_color: sanitizeHotspotColor(tour.default_hotspot_color),
       style_size: DEFAULT_SIZE,
@@ -402,182 +406,207 @@ function TourEditorInner({
       setHotspots(previous);
       setSelectedHotspotId(null);
       toast.error("Could not create info hotspot");
-      return;
     }
+  }
 
-    setPlaceDraft(null);
+  async function persistMarkerMove(
+    hotspotId: string,
+    yaw: number,
+    pitch: number,
+  ) {
+    const previous = hotspots;
+    setHotspots((prev) =>
+      prev.map((item) =>
+        item.id === hotspotId ? { ...item, yaw, pitch } : item,
+      ),
+    );
+
+    const ok = await run(() => updateHotspot(hotspotId, { yaw, pitch }));
+    if (!ok) {
+      setHotspots(previous);
+      toast.error("Could not move hotspot");
+    }
+  }
+
+  function handleMarkerMoving(hotspotId: string, yaw: number, pitch: number) {
+    setHotspots((prev) =>
+      prev.map((item) =>
+        item.id === hotspotId ? { ...item, yaw, pitch } : item,
+      ),
+    );
   }
 
   return (
     <>
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-      <div
-        className="flex border-b bg-amber-50 px-4 py-2 text-center text-xs text-amber-950 lg:hidden dark:bg-amber-950/40 dark:text-amber-100"
-        role="status"
-      >
-        Tour editing works best on a larger screen
-      </div>
-      <header className="flex shrink-0 items-center gap-3 border-b px-3 py-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="shrink-0 px-2"
-          nativeButton={false}
-          render={<Link href="/dashboard" />}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+        <div
+          className="flex border-b bg-amber-50 px-4 py-2 text-center text-xs text-amber-950 lg:hidden dark:bg-amber-950/40 dark:text-amber-100"
+          role="status"
         >
-          ← Tours
-        </Button>
-
-        <Input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          onBlur={() => {
-            void saveTitle();
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.currentTarget.blur();
-            }
-          }}
-          className="h-8 max-w-md border-transparent bg-transparent px-2 text-base font-semibold tracking-tight shadow-none focus-visible:border-input focus-visible:bg-background"
-          aria-label="Tour title"
-        />
-
-        <div className="ml-auto flex items-center gap-3">
-          <SaveStatusIndicator />
+          Tour editing works best on a larger screen
+        </div>
+        <header className="flex shrink-0 items-center gap-3 border-b px-3 py-2">
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
-            type="button"
-            onClick={() => setEmbedOpen(true)}
-          >
-            Embed
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
+            className="shrink-0 px-2"
             nativeButton={false}
-            render={
-              <a
-                href={
-                  tour.is_public
-                    ? `/tour/${tour.slug}`
-                    : `/dashboard/tours/${tour.id}/preview`
-                }
-                target="_blank"
-                rel="noreferrer"
-              />
-            }
+            render={<Link href="/dashboard" />}
           >
-            Preview
+            ← Tours
           </Button>
-        </div>
-      </header>
 
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div className="order-2 flex max-h-[40vh] min-h-0 w-full flex-col lg:order-1 lg:max-h-none lg:h-full lg:w-auto">
-          <SceneSidebar
-            tourId={tour.id}
-            userId={userId}
-            scenes={scenes}
-            activeSceneId={activeSceneId}
-            onScenesChange={(next) => {
-              setScenes(next);
-              pruneHotspotsForScenes(next);
+          <Input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            onBlur={() => {
+              void saveTitle();
             }}
-            onActiveSceneChange={setActiveSceneId}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
+            className="h-8 max-w-md border-transparent bg-transparent px-2 text-base font-semibold tracking-tight shadow-none focus-visible:border-input focus-visible:bg-background"
+            aria-label="Tour title"
           />
-        </div>
 
-        <div className="order-1 flex min-h-0 min-w-0 flex-1 flex-col lg:order-2">
-          <div className="relative min-h-[40vh] flex-1 lg:min-h-0">
-            {movingHotspotId ? (
-              <div className="absolute top-3 left-1/2 z-20 max-w-[min(90%,28rem)] -translate-x-1/2 rounded-lg bg-background/95 px-3 py-2 text-center text-sm shadow-md ring-1 ring-foreground/10">
-                Click a new location to move this hotspot — Esc to cancel
-              </div>
-            ) : null}
-
-            <PanoramaViewer
-              scenes={scenes}
-              hotspots={hotspots}
-              currentSceneId={activeSceneId ?? undefined}
-              selectedHotspotId={selectedHotspotId}
-              movingHotspotId={movingHotspotId}
-              startSceneId={tour.cover_scene_id ?? undefined}
-              mode="edit"
-              className="rounded-none"
-              onSceneChange={setActiveSceneId}
-              onMarkerSelect={(id) => {
-                setSelectedHotspotId(id);
-                setPlaceDraft(null);
-              }}
-              onPanoramaClick={handlePanoramaClick}
-              onViewerReady={(viewer) => {
-                viewerRef.current = viewer;
-              }}
-            />
-
-            {placeDraft && activeSceneId && !movingHotspotId ? (
-              <PlaceHotspotPanel
-                draft={placeDraft}
-                scenes={scenes}
-                activeSceneId={activeSceneId}
-                onCancel={() => setPlaceDraft(null)}
-                onCreateLink={(input) => createLinkHotspot(input)}
-                onCreateInfo={(input) => createInfoHotspot(input)}
-              />
-            ) : null}
-          </div>
-
-          <div className="flex shrink-0 items-center gap-3 border-t px-3 py-2">
-            <p className="min-w-0 flex-1 truncate text-sm">
-              {activeScene ? (
-                <>
-                  <span className="text-muted-foreground">Active scene: </span>
-                  <span className="font-medium">{activeScene.name}</span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">No scene selected</span>
-              )}
-            </p>
+          <div className="ml-auto flex items-center gap-3">
+            <SaveStatusIndicator />
             <Button
-              type="button"
               variant="outline"
               size="sm"
-              disabled={!activeScene || status === "saving"}
-              title="Save the current camera angle as where visitors look when they land on this scene"
-              onClick={() => {
-                void setInitialView();
-              }}
+              type="button"
+              onClick={() => setEmbedOpen(true)}
             >
-              {status === "saving" ? "Saving…" : "Set as initial view"}
+              Embed
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              nativeButton={false}
+              render={
+                <a
+                  href={
+                    tour.is_public
+                      ? `/tour/${tour.slug}`
+                      : `/dashboard/tours/${tour.id}/preview`
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                />
+              }
+            >
+              Preview
             </Button>
           </div>
-        </div>
+        </header>
 
-        <div className="order-3 hidden lg:flex">
-          <HotspotPanel
-            tourId={tour.id}
-            scenes={scenes}
-            hotspots={hotspots}
-            activeSceneId={activeSceneId}
-            selectedHotspotId={selectedHotspotId}
-            movingHotspotId={movingHotspotId}
-            onSelect={setSelectedHotspotId}
-            onHotspotsChange={setHotspots}
-            onFaceHotspot={faceHotspot}
-            onToggleMove={toggleMove}
-          />
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <div className="order-2 flex max-h-[40vh] min-h-0 w-full flex-col lg:order-1 lg:max-h-none lg:h-full lg:w-auto">
+            <SceneSidebar
+              tourId={tour.id}
+              userId={userId}
+              scenes={scenes}
+              activeSceneId={activeSceneId}
+              onScenesChange={(next) => {
+                setScenes(next);
+                pruneHotspotsForScenes(next);
+              }}
+              onActiveSceneChange={setActiveSceneId}
+            />
+          </div>
+
+          <div className="order-1 flex min-h-0 min-w-0 flex-1 flex-col lg:order-2">
+            <HotspotToolbar
+              placingType={placingType}
+              onPlacingTypeChange={setPlacingType}
+              sceneCount={scenes.length}
+              disabled={!activeSceneId}
+              autoReturnLink={autoReturnLink}
+              onAutoReturnLinkChange={setAutoReturnLink}
+            />
+
+            <div className="relative min-h-[40vh] flex-1 lg:min-h-0">
+              {placingType ? (
+                <div className="absolute top-3 left-1/2 z-20 max-w-[min(90%,28rem)] -translate-x-1/2 rounded-lg bg-background/95 px-3 py-2 text-center text-sm shadow-md ring-1 ring-foreground/10">
+                  {placingBannerText(placingType)}
+                </div>
+              ) : null}
+
+              <PanoramaViewer
+                scenes={scenes}
+                hotspots={hotspots}
+                currentSceneId={activeSceneId ?? undefined}
+                selectedHotspotId={selectedHotspotId}
+                placing={Boolean(placingType)}
+                startSceneId={tour.cover_scene_id ?? undefined}
+                mode="edit"
+                className="rounded-none"
+                closeInfoPopoverNonce={closeInfoPopoverNonce}
+                onInfoPopoverOpenChange={setInfoPopoverOpen}
+                onSceneChange={setActiveSceneId}
+                onMarkerSelect={(id) => {
+                  setSelectedHotspotId(id);
+                }}
+                onPanoramaClick={handlePanoramaClick}
+                onMarkerMoving={handleMarkerMoving}
+                onMarkerMoved={(id, yaw, pitch) => {
+                  void persistMarkerMove(id, yaw, pitch);
+                }}
+                onViewerReady={(viewer) => {
+                  viewerRef.current = viewer;
+                }}
+              />
+            </div>
+
+            <div className="flex shrink-0 items-center gap-3 border-t px-3 py-2">
+              <p className="min-w-0 flex-1 truncate text-sm">
+                {activeScene ? (
+                  <>
+                    <span className="text-muted-foreground">Active scene: </span>
+                    <span className="font-medium">{activeScene.name}</span>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">No scene selected</span>
+                )}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!activeScene || status === "saving"}
+                title="Save the current camera angle as where visitors look when they land on this scene"
+                onClick={() => {
+                  void setInitialView();
+                }}
+              >
+                {status === "saving" ? "Saving…" : "Set as initial view"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="order-3 hidden lg:flex">
+            <HotspotPanel
+              tourId={tour.id}
+              scenes={scenes}
+              hotspots={hotspots}
+              activeSceneId={activeSceneId}
+              selectedHotspotId={selectedHotspotId}
+              onSelect={setSelectedHotspotId}
+              onHotspotsChange={setHotspots}
+              onFaceHotspot={faceHotspot}
+            />
+          </div>
         </div>
       </div>
-    </div>
 
-    <EmbedDialog
-      tour={tour}
-      scenes={scenes.map((scene) => ({ id: scene.id, name: scene.name }))}
-      open={embedOpen}
-      onOpenChange={setEmbedOpen}
-    />
+      <EmbedDialog
+        tour={tour}
+        scenes={scenes.map((scene) => ({ id: scene.id, name: scene.name }))}
+        open={embedOpen}
+        onOpenChange={setEmbedOpen}
+      />
     </>
   );
 }

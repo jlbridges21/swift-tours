@@ -18,6 +18,8 @@ export type InfoHotspotPopoverProps = {
   label: string | null;
   content: string | null;
   onClose: () => void;
+  /** Bias placement toward the left so edit-mode right panel stays clear. */
+  preferLeft?: boolean;
 };
 
 type AnchorSide = "above" | "below";
@@ -37,6 +39,7 @@ function computeLayout(
   pitch: number,
   popoverWidth: number,
   popoverHeight: number,
+  preferLeft = false,
 ): Layout {
   const size = viewer.getSize();
   const sheet = size.width < SHEET_BREAKPOINT;
@@ -70,6 +73,11 @@ function computeLayout(
 
   // Prefer centering on the marker; clamp into the viewer.
   let left = point.x - measuredWidth / 2;
+  // In the editor, keep clear of the right hotspot panel by biasing left.
+  if (preferLeft) {
+    left = Math.min(left, size.width - measuredWidth - EDGE_PAD - 24);
+    left = Math.min(left, point.x - measuredWidth + 40);
+  }
   left = Math.max(EDGE_PAD, Math.min(left, size.width - measuredWidth - EDGE_PAD));
 
   // If below would overflow the bottom, try above again when there's room.
@@ -109,6 +117,7 @@ export function InfoHotspotPopover({
   label,
   content,
   onClose,
+  preferLeft = false,
 }: InfoHotspotPopoverProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
@@ -125,7 +134,9 @@ export function InfoHotspotPopover({
     const el = panelRef.current;
     const width = el?.offsetWidth ?? MAX_WIDTH;
     const height = el?.offsetHeight ?? 120;
-    setLayout(computeLayout(viewer, yaw, pitch, width, height));
+    setLayout(
+      computeLayout(viewer, yaw, pitch, width, height, preferLeft),
+    );
   };
 
   const scheduleUpdate = () => {
@@ -139,7 +150,7 @@ export function InfoHotspotPopover({
   useLayoutEffect(() => {
     updatePosition();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- yaw/pitch/viewer drive layout
-  }, [viewer, yaw, pitch, label, content]);
+  }, [viewer, yaw, pitch, label, content, preferLeft]);
 
   useEffect(() => {
     const onPosition = () => scheduleUpdate();

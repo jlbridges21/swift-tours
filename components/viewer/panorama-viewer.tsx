@@ -89,14 +89,21 @@ export type PanoramaViewerProps = {
   startSceneId?: string;
   currentSceneId?: string;
   selectedHotspotId?: string | null;
-  /** Armed one-shot reposition mode — highlight this marker and use crosshair cursor. */
-  movingHotspotId?: string | null;
+  /** When true, show a crosshair — placing a new hotspot. */
+  placing?: boolean;
   mode: "view" | "edit";
   className?: string;
   ariaLabel?: string;
+  /** Increment to force-close the info popover (Escape priority from parent). */
+  closeInfoPopoverNonce?: number;
   onSceneChange?: (sceneId: string) => void;
   onPanoramaClick?: (payload: PanoramaClickPayload) => void;
   onMarkerSelect?: (hotspotId: string) => void;
+  /** Live yaw/pitch while dragging a marker (edit mode). */
+  onMarkerMoving?: (hotspotId: string, yaw: number, pitch: number) => void;
+  /** Final yaw/pitch after a drag ends (edit mode). */
+  onMarkerMoved?: (hotspotId: string, yaw: number, pitch: number) => void;
+  onInfoPopoverOpenChange?: (open: boolean) => void;
   onViewerReady?: (viewer: Viewer) => void;
 };
 
@@ -300,6 +307,7 @@ function syncEditMarkers(
   sceneHotspots: PanoramaViewerHotspot[],
   highlightedHotspotId: string | null | undefined,
   scenes: PanoramaViewerScene[],
+  skipPositionUpdateId?: string | null,
 ) {
   const existingIds = new Set(markers.getMarkers().map((marker) => marker.id));
   const nextIds = new Set(sceneHotspots.map((hotspot) => hotspot.id));
@@ -311,6 +319,8 @@ function syncEditMarkers(
       scenes,
     );
     if (existingIds.has(hotspot.id)) {
+      // Drag owns position for this marker — don't snap it back mid-gesture.
+      if (hotspot.id === skipPositionUpdateId) continue;
       markers.updateMarker(config);
     } else {
       markers.addMarker(config);
@@ -345,19 +355,36 @@ function applyNodeInitialView(
   viewer.rotate({ yaw: data.initialYaw, pitch: data.initialPitch });
 }
 
+const DRAG_THRESHOLD_PX = 5;
+const MARKER_ID_PREFIX = "psv-marker-";
+
+function markerElementFromTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest(".psv-marker") as HTMLElement | null;
+}
+
+function hotspotIdFromMarkerElement(el: HTMLElement): string | null {
+  if (!el.id.startsWith(MARKER_ID_PREFIX)) return null;
+  return el.id.slice(MARKER_ID_PREFIX.length) || null;
+}
+
 export function PanoramaViewer({
   scenes,
   hotspots,
   startSceneId,
   currentSceneId,
   selectedHotspotId,
-  movingHotspotId,
+  placing = false,
   mode,
   className,
   ariaLabel,
+  closeInfoPopoverNonce = 0,
   onSceneChange,
   onPanoramaClick,
   onMarkerSelect,
+  onMarkerMoving,
+  onMarkerMoved,
+  onInfoPopoverOpenChange,
   onViewerReady,
 }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -367,11 +394,17 @@ export function PanoramaViewer({
   const onSceneChangeRef = useRef(onSceneChange);
   const onPanoramaClickRef = useRef(onPanoramaClick);
   const onMarkerSelectRef = useRef(onMarkerSelect);
+  const onMarkerMovingRef = useRef(onMarkerMoving);
+  const onMarkerMovedRef = useRef(onMarkerMoved);
+  const onInfoPopoverOpenChangeRef = useRef(onInfoPopoverOpenChange);
   const onViewerReadyRef = useRef(onViewerReady);
   /** True while the initial setNodes→setCurrentNode load is in flight. */
   const bootstrappingRef = useRef(false);
   /** Scene id the controlled effect should not re-request during bootstrap. */
   const bootstrapSceneIdRef = useRef<string | null>(null);
+  const draggingIdRef = useRef<string | null>(null);
+  const suppressClickRef = useRef(false);
+  const hotspotsRef = useRef(hotspots);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadTimedOut, setLoadTimedOut] = useState(false);
@@ -382,10 +415,30 @@ export function PanoramaViewer({
   onSceneChangeRef.current = onSceneChange;
   onPanoramaClickRef.current = onPanoramaClick;
   onMarkerSelectRef.current = onMarkerSelect;
+  onMarkerMovingRef.current = onMarkerMoving;
+  onMarkerMovedRef.current = onMarkerMoved;
+  onInfoPopoverOpenChangeRef.current = onInfoPopoverOpenChange;
   onViewerReadyRef.current = onViewerReady;
+  hotspotsRef.current = hotspots;
 
   const hasScenes = scenes.length > 0;
-  const highlightedHotspotId = movingHotspotId ?? selectedHotspotId;
+  const highlightedHotspotId = selectedHotspotId;
+
+  useEffect(() => {
+    onInfoPopoverOpenChangeRef.current?.(infoOverlay != null);
+  }, [infoOverlay]);
+
+  useEffect(() => {
+    if (closeInfoPopoverNonce > 0) {
+      setInfoOverlay(null);
+    }
+  }, [closeInfoPopoverNonce]);
+
+  useEffect(() => {
+    if (!selectedHotspotId) {
+      setInfoOverlay(null);
+    }
+  }, [selectedHotspotId]);
 
   const startScene = useMemo(() => {
     if (!hasScenes) return null;
@@ -643,6 +696,7 @@ export function PanoramaViewer({
       hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
       highlightedHotspotId,
       scenes,
+      draggingIdRef.current,
     );
   }, [
     mode,
@@ -651,9 +705,191 @@ export function PanoramaViewer({
     hotspots,
     scenes,
     selectedHotspotId,
-    movingHotspotId,
     highlightedHotspotId,
   ]);
+
+  // Edit mode: drag markers to reposition (PSV has no built-in drag).
+  useEffect(() => {
+    const maybeViewer = viewerRef.current;
+    if (!maybeViewer || !hasScenes || mode !== "edit") return;
+    const viewer: Viewer = maybeViewer;
+
+    const markersPlugin = viewer.getPlugin<MarkersPlugin>(MarkersPlugin);
+    if (!markersPlugin) return;
+
+    const root = viewer.container;
+    root.classList.add("st-editor-markers");
+
+    type DragState = {
+      id: string;
+      pointerId: number;
+      startX: number;
+      startY: number;
+      originYaw: number;
+      originPitch: number;
+      dragging: boolean;
+      lastYaw: number;
+      lastPitch: number;
+      markerEl: HTMLElement;
+    };
+
+    let state: DragState | null = null;
+
+    function restoreViewerControls() {
+      viewer.setOption("mousemove", true);
+    }
+
+    function cancelDrag(restoreOrigin: boolean) {
+      if (!state) return;
+      const current = state;
+      state = null;
+      draggingIdRef.current = null;
+      current.markerEl.classList.remove("st-marker-dragging");
+      restoreViewerControls();
+      try {
+        current.markerEl.releasePointerCapture(current.pointerId);
+      } catch {
+        // already released
+      }
+
+      if (restoreOrigin) {
+        markersPlugin.updateMarker({
+          id: current.id,
+          position: { yaw: current.originYaw, pitch: current.originPitch },
+        });
+        onMarkerMovingRef.current?.(
+          current.id,
+          current.originYaw,
+          current.originPitch,
+        );
+      }
+    }
+
+    function onPointerDown(event: PointerEvent) {
+      if (event.button !== 0 && event.pointerType === "mouse") return;
+      const markerEl = markerElementFromTarget(event.target);
+      if (!markerEl) return;
+      const id = hotspotIdFromMarkerElement(markerEl);
+      if (!id) return;
+
+      const hotspot = hotspotsRef.current.find((item) => item.id === id);
+      if (!hotspot) return;
+
+      // Disable panorama orbit immediately so clicks/drags on markers don't spin the view.
+      viewer.setOption("mousemove", false);
+
+      state = {
+        id,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originYaw: hotspot.yaw,
+        originPitch: hotspot.pitch,
+        dragging: false,
+        lastYaw: hotspot.yaw,
+        lastPitch: hotspot.pitch,
+        markerEl,
+      };
+      draggingIdRef.current = id;
+      markerEl.setPointerCapture(event.pointerId);
+    }
+
+    function onPointerMove(event: PointerEvent) {
+      if (!state || event.pointerId !== state.pointerId) return;
+
+      const dx = event.clientX - state.startX;
+      const dy = event.clientY - state.startY;
+      if (!state.dragging) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        state.dragging = true;
+        state.markerEl.classList.add("st-marker-dragging");
+        event.preventDefault();
+      } else {
+        event.preventDefault();
+      }
+
+      const rect = viewer.container.getBoundingClientRect();
+      const point = {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      };
+      let position;
+      try {
+        position = viewer.dataHelper.viewerCoordsToSphericalCoords(point);
+      } catch {
+        return;
+      }
+
+      state.lastYaw = position.yaw;
+      state.lastPitch = position.pitch;
+      markersPlugin.updateMarker({
+        id: state.id,
+        position: { yaw: position.yaw, pitch: position.pitch },
+      });
+      onMarkerMovingRef.current?.(state.id, position.yaw, position.pitch);
+
+      setInfoOverlay((prev) =>
+        prev && prev.id === state!.id
+          ? { ...prev, yaw: position.yaw, pitch: position.pitch }
+          : prev,
+      );
+    }
+
+    function onPointerUp(event: PointerEvent) {
+      if (!state || event.pointerId !== state.pointerId) return;
+      const current = state;
+      const wasDragging = current.dragging;
+      state = null;
+      draggingIdRef.current = null;
+      current.markerEl.classList.remove("st-marker-dragging");
+      restoreViewerControls();
+      try {
+        current.markerEl.releasePointerCapture(current.pointerId);
+      } catch {
+        // already released
+      }
+
+      if (wasDragging) {
+        suppressClickRef.current = true;
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+        onMarkerMovedRef.current?.(
+          current.id,
+          current.lastYaw,
+          current.lastPitch,
+        );
+      }
+    }
+
+    function onPointerCancel(event: PointerEvent) {
+      if (!state || event.pointerId !== state.pointerId) return;
+      cancelDrag(true);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && state) {
+        event.preventDefault();
+        cancelDrag(true);
+      }
+    }
+
+    root.addEventListener("pointerdown", onPointerDown);
+    root.addEventListener("pointermove", onPointerMove);
+    root.addEventListener("pointerup", onPointerUp);
+    root.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      root.classList.remove("st-editor-markers");
+      root.removeEventListener("pointerdown", onPointerDown);
+      root.removeEventListener("pointermove", onPointerMove);
+      root.removeEventListener("pointerup", onPointerUp);
+      root.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("keydown", onKeyDown);
+      if (state) cancelDrag(true);
+    };
+  }, [mode, hasScenes, retryNonce]);
 
   // Edit-mode panorama click (empty space only — markers use select-marker).
   useEffect(() => {
@@ -662,6 +898,8 @@ export function PanoramaViewer({
 
     const handleClick = (event: events.ClickEvent) => {
       if (event.data.rightclick) return;
+      // Ignore the click that ends a drag.
+      if (suppressClickRef.current) return;
 
       const markerId =
         event.data.marker && typeof event.data.marker === "object"
@@ -712,6 +950,7 @@ export function PanoramaViewer({
   // Keep open popover content/position in sync with hotspot edits.
   useEffect(() => {
     if (!infoOverlay) return;
+    if (draggingIdRef.current === infoOverlay.id) return;
     const hotspot = hotspots.find((item) => item.id === infoOverlay.id);
     if (!hotspot || hotspot.type !== "info") {
       setInfoOverlay(null);
@@ -767,7 +1006,7 @@ export function PanoramaViewer({
         // Parent must give this an explicit height — WebGL canvases in a
         // zero-height container render nothing. Default fills the parent.
         "relative h-full min-h-[240px] overflow-hidden rounded-xl bg-black",
-        movingHotspotId && "cursor-crosshair",
+        placing && "cursor-crosshair",
         className,
       )}
     >
@@ -797,6 +1036,7 @@ export function PanoramaViewer({
           label={infoOverlay.label}
           content={infoOverlay.content}
           onClose={closeInfoOverlay}
+          preferLeft={mode === "edit"}
         />
       ) : null}
     </div>

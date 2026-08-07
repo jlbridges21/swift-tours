@@ -1,11 +1,12 @@
 "use client";
 
-import { InfoIcon, Link2Icon, MoveIcon, Trash2Icon } from "lucide-react";
+import { ChevronLeftIcon, InfoIcon, Link2Icon, Trash2Icon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
   applyHotspotStyleToTour,
+  createHotspot,
   deleteHotspot,
   updateHotspot,
 } from "@/app/dashboard/tours/[id]/actions";
@@ -46,12 +47,26 @@ type HotspotPanelProps = {
   hotspots: Hotspot[];
   activeSceneId: string | null;
   selectedHotspotId: string | null;
-  movingHotspotId: string | null;
   onSelect: (hotspotId: string | null) => void;
   onHotspotsChange: (hotspots: Hotspot[]) => void;
   onFaceHotspot: (hotspot: Hotspot) => void;
-  onToggleMove: (hotspotId: string) => void;
 };
+
+function normalizeYaw(yaw: number): number {
+  const twoPi = Math.PI * 2;
+  return ((yaw % twoPi) + twoPi) % twoPi;
+}
+
+function reciprocalYaw(yaw: number): number {
+  return normalizeYaw(yaw + Math.PI);
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(
+    target.closest("input, textarea, select, [contenteditable=true]"),
+  );
+}
 
 export function HotspotPanel({
   tourId,
@@ -59,11 +74,9 @@ export function HotspotPanel({
   hotspots,
   activeSceneId,
   selectedHotspotId,
-  movingHotspotId,
   onSelect,
   onHotspotsChange,
   onFaceHotspot,
-  onToggleMove,
 }: HotspotPanelProps) {
   const { run } = useSaveStatus();
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -105,14 +118,53 @@ export function HotspotPanel({
     toast.success("Hotspot deleted");
   }
 
+  // Delete / Backspace removes the selected hotspot (confirm first).
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (isTypingTarget(event.target)) return;
+      if (!selectedHotspotId) return;
+      if (selected && selected.scene_id !== activeSceneId) return;
+      event.preventDefault();
+      setDeleteId(selectedHotspotId);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedHotspotId, selected, activeSceneId]);
+
+  const editing =
+    selected != null && selected.scene_id === activeSceneId ? selected : null;
+
   return (
     <aside className="flex h-full w-[300px] shrink-0 flex-col border-l bg-background">
       <div className="border-b px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        Hotspots
+        {editing ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-xs font-medium tracking-wide text-muted-foreground uppercase hover:text-foreground"
+            onClick={() => onSelect(null)}
+          >
+            <ChevronLeftIcon className="size-3.5" />
+            Hotspots
+          </button>
+        ) : (
+          "Hotspots"
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {!activeSceneId ? (
+        {editing ? (
+          <HotspotEditor
+            key={editing.id}
+            tourId={tourId}
+            hotspot={editing}
+            scenes={scenes}
+            onHotspotsChange={onHotspotsChange}
+            allHotspots={hotspots}
+            onRequestDelete={() => setDeleteId(editing.id)}
+          />
+        ) : !activeSceneId ? (
           <p className="px-2 py-6 text-center text-sm text-muted-foreground">
             Select a scene to manage hotspots.
           </p>
@@ -120,15 +172,13 @@ export function HotspotPanel({
           <div className="flex flex-col gap-2 px-2 py-6 text-center">
             <p className="text-sm font-medium">No hotspots yet</p>
             <p className="text-sm text-muted-foreground">
-              Click the panorama to place a link (jump to another scene) or an
-              info marker visitors can tap.
+              Use Add link or Add info in the toolbar, then click the panorama to
+              place one. Drag a marker to move it.
             </p>
           </div>
         ) : (
           <ul className="flex flex-col gap-1">
             {sceneHotspots.map((hotspot) => {
-              const active = hotspot.id === selectedHotspotId;
-              const moving = hotspot.id === movingHotspotId;
               const title =
                 hotspot.label?.trim() ||
                 (hotspot.type === "link"
@@ -137,13 +187,7 @@ export function HotspotPanel({
 
               return (
                 <li key={hotspot.id}>
-                  <div
-                    className={cn(
-                      "flex w-full items-center gap-1 rounded-lg px-1 py-1 text-sm",
-                      active && "bg-muted ring-1 ring-foreground/10",
-                      moving && "ring-1 ring-blue-500",
-                    )}
-                  >
+                  <div className="flex w-full items-center gap-1 rounded-lg px-1 py-1 text-sm">
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-muted/80"
@@ -161,20 +205,6 @@ export function HotspotPanel({
                     </button>
                     <Button
                       type="button"
-                      variant={moving ? "default" : "ghost"}
-                      size="icon-xs"
-                      aria-label={moving ? "Cancel move" : "Move hotspot"}
-                      title={
-                        moving
-                          ? "Cancel move"
-                          : "Move — click a new spot on the panorama"
-                      }
-                      onClick={() => onToggleMove(hotspot.id)}
-                    >
-                      <MoveIcon />
-                    </Button>
-                    <Button
-                      type="button"
                       variant="ghost"
                       size="icon-xs"
                       aria-label="Delete hotspot"
@@ -188,19 +218,6 @@ export function HotspotPanel({
             })}
           </ul>
         )}
-
-        {selected && selected.scene_id === activeSceneId ? (
-          <HotspotEditor
-            key={selected.id}
-            tourId={tourId}
-            hotspot={selected}
-            scenes={scenes}
-            onHotspotsChange={onHotspotsChange}
-            allHotspots={hotspots}
-            isMoving={selected.id === movingHotspotId}
-            onToggleMove={() => onToggleMove(selected.id)}
-          />
-        ) : null}
       </div>
 
       <AlertDialog
@@ -240,8 +257,7 @@ type HotspotEditorProps = {
   scenes: Scene[];
   allHotspots: Hotspot[];
   onHotspotsChange: (hotspots: Hotspot[]) => void;
-  isMoving: boolean;
-  onToggleMove: () => void;
+  onRequestDelete: () => void;
 };
 
 function HotspotEditor({
@@ -250,8 +266,7 @@ function HotspotEditor({
   scenes,
   allHotspots,
   onHotspotsChange,
-  isMoving,
-  onToggleMove,
+  onRequestDelete,
 }: HotspotEditorProps) {
   const { run } = useSaveStatus();
   const [label, setLabel] = useState(hotspot.label ?? "");
@@ -272,6 +287,7 @@ function HotspotEditor({
   );
   const [applyOpen, setApplyOpen] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [addingReturn, setAddingReturn] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const styleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -279,6 +295,16 @@ function HotspotEditor({
     () => scenes.filter((scene) => scene.id !== hotspot.scene_id),
     [scenes, hotspot.scene_id],
   );
+
+  const hasReturnLink = useMemo(() => {
+    if (hotspot.type !== "link" || !hotspot.target_scene_id) return true;
+    return allHotspots.some(
+      (item) =>
+        item.type === "link" &&
+        item.scene_id === hotspot.target_scene_id &&
+        item.target_scene_id === hotspot.scene_id,
+    );
+  }, [allHotspots, hotspot]);
 
   useEffect(() => {
     setLabel(hotspot.label ?? "");
@@ -359,6 +385,47 @@ function HotspotEditor({
     }
   }
 
+  async function handleAddReturnLink() {
+    if (!hotspot.target_scene_id || hasReturnLink) return;
+    setAddingReturn(true);
+    const id = crypto.randomUUID();
+    const created: Hotspot = {
+      id,
+      scene_id: hotspot.target_scene_id,
+      target_scene_id: hotspot.scene_id,
+      type: "link",
+      yaw: reciprocalYaw(hotspot.yaw),
+      pitch: 0,
+      label: hotspot.label,
+      content: null,
+      style_shape: hotspot.style_shape,
+      style_color: hotspot.style_color,
+      style_size: hotspot.style_size,
+      style_animation: hotspot.style_animation,
+      label_visibility: hotspot.label_visibility,
+      created_at: new Date().toISOString(),
+    };
+    const previous = allHotspots;
+    onHotspotsChange([...allHotspots, created]);
+    const ok = await run(() =>
+      createHotspot(created.scene_id, {
+        id: created.id,
+        type: "link",
+        targetSceneId: created.target_scene_id,
+        yaw: created.yaw,
+        pitch: created.pitch,
+        label: created.label,
+      }),
+    );
+    setAddingReturn(false);
+    if (!ok) {
+      onHotspotsChange(previous);
+      toast.error("Could not create return link");
+      return;
+    }
+    toast.success("Return link created");
+  }
+
   async function handleApplyToAll() {
     setApplying(true);
     const previous = allHotspots;
@@ -387,21 +454,10 @@ function HotspotEditor({
   }
 
   return (
-    <div className="mt-3 flex flex-col gap-3 rounded-lg border border-foreground/10 p-3">
+    <div className="flex flex-col gap-3">
       <p className="text-xs font-medium text-muted-foreground uppercase">
         Edit {hotspot.type === "link" ? "link" : "info"}
       </p>
-
-      <Button
-        type="button"
-        variant={isMoving ? "default" : "outline"}
-        size="sm"
-        className="justify-start"
-        onClick={onToggleMove}
-      >
-        <MoveIcon className="size-3.5" />
-        {isMoving ? "Cancel move" : "Move on panorama"}
-      </Button>
 
       {hotspot.type === "link" ? (
         <div className="flex flex-col gap-1.5">
@@ -454,6 +510,20 @@ function HotspotEditor({
             }}
           />
         </div>
+      ) : null}
+
+      {hotspot.type === "link" && !hasReturnLink ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={addingReturn}
+          onClick={() => {
+            void handleAddReturnLink();
+          }}
+        >
+          {addingReturn ? "Adding…" : "Add return link"}
+        </Button>
       ) : null}
 
       <div className="border-t border-foreground/10 pt-3">
@@ -611,18 +681,28 @@ function HotspotEditor({
             size="sm"
             onClick={() => setApplyOpen(true)}
           >
-            Apply this style to all hotspots…
+            Apply this style to all hotspots in this tour
           </Button>
         </div>
       </div>
 
+      <Button
+        type="button"
+        variant="destructive"
+        size="sm"
+        onClick={onRequestDelete}
+      >
+        <Trash2Icon className="size-3.5" />
+        Delete hotspot
+      </Button>
+
       <AlertDialog open={applyOpen} onOpenChange={setApplyOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apply style to every hotspot?</AlertDialogTitle>
+            <AlertDialogTitle>Apply style to all hotspots?</AlertDialogTitle>
             <AlertDialogDescription>
               This overwrites shape, color, size, animation, and label
-              visibility on all hotspots in this tour. It cannot be undone.
+              visibility on every hotspot in this tour.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
