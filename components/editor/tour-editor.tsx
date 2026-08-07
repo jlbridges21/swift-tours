@@ -13,6 +13,12 @@ import {
   updateTourTitle,
 } from "@/app/dashboard/tours/[id]/actions";
 import { AdjustmentsPanel } from "@/components/editor/adjustments-panel";
+import {
+  EffectsPanel,
+  effectsFieldsFromTour,
+  viewerEffectsFromFields,
+  type TourEffectsFields,
+} from "@/components/editor/effects-panel";
 import { FloorPlanEditor } from "@/components/editor/floor-plan-editor";
 import { HotspotPanel } from "@/components/editor/hotspot-panel";
 import {
@@ -49,11 +55,6 @@ import {
 } from "@/lib/hotspot-styles";
 import { isNadirMarkerId } from "@/lib/nadir";
 import { cn } from "@/lib/utils";
-import {
-  DEFAULT_VIEWER_EFFECTS,
-  isIntroEffect,
-  isTransitionEffect,
-} from "@/lib/viewer-effects";
 import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 type TourEditorProps = {
@@ -116,8 +117,12 @@ function TourEditorInner({
     nadir_rotation: tour.nadir_rotation,
     nadir_feather: tour.nadir_feather ?? 0.35,
   });
+  const [effects, setEffects] = useState<TourEffectsFields>(() =>
+    effectsFieldsFromTour(tour),
+  );
+  const [introReplayNonce, setIntroReplayNonce] = useState(0);
   const [rightPanel, setRightPanel] = useState<
-    "hotspots" | "nadir" | "adjustments" | "floorplan"
+    "hotspots" | "nadir" | "adjustments" | "floorplan" | "effects"
   >("hotspots");
   const [adjustmentsBypassed, setAdjustmentsBypassed] = useState(false);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(
@@ -166,6 +171,18 @@ function TourEditorInner({
     tour.nadir_opacity,
     tour.nadir_rotation,
     tour.nadir_feather,
+  ]);
+
+  useEffect(() => {
+    setEffects(effectsFieldsFromTour(tour));
+  }, [
+    tour.intro_effect,
+    tour.transition_effect,
+    tour.transition_speed,
+    tour.transition_zoom,
+    tour.transition_rotation,
+    tour.gyroscope_enabled,
+    tour.vr_enabled,
   ]);
 
   useEffect(() => {
@@ -627,24 +644,9 @@ function TourEditorInner({
                   opacity: nadir.nadir_opacity,
                   rotation: nadir.nadir_rotation,
                 }}
-                viewerEffects={{
-                  introEffect: isIntroEffect(tour.intro_effect)
-                    ? tour.intro_effect
-                    : DEFAULT_VIEWER_EFFECTS.introEffect,
-                  transition: {
-                    effect: isTransitionEffect(tour.transition_effect)
-                      ? tour.transition_effect
-                      : DEFAULT_VIEWER_EFFECTS.transition.effect,
-                    speed:
-                      tour.transition_speed ??
-                      DEFAULT_VIEWER_EFFECTS.transition.speed,
-                    zoom: tour.transition_zoom ?? true,
-                    rotation: tour.transition_rotation ?? true,
-                  },
-                  gyroscopeEnabled: tour.gyroscope_enabled ?? true,
-                  vrEnabled: tour.vr_enabled ?? true,
-                }}
+                viewerEffects={viewerEffectsFromFields(effects)}
                 runIntro={false}
+                introReplayNonce={introReplayNonce}
                 adjustmentsBypassed={adjustmentsBypassed}
                 onInfoPopoverOpenChange={setInfoPopoverOpen}
                 onSceneChange={setActiveSceneId}
@@ -701,7 +703,7 @@ function TourEditorInner({
                 role="tab"
                 aria-selected={rightPanel === "hotspots"}
                 className={cn(
-                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  "flex-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium sm:text-xs",
                   rightPanel === "hotspots"
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -718,7 +720,7 @@ function TourEditorInner({
                 role="tab"
                 aria-selected={rightPanel === "nadir"}
                 className={cn(
-                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  "flex-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium sm:text-xs",
                   rightPanel === "nadir"
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -735,7 +737,7 @@ function TourEditorInner({
                 role="tab"
                 aria-selected={rightPanel === "floorplan"}
                 className={cn(
-                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  "flex-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium sm:text-xs",
                   rightPanel === "floorplan"
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -750,9 +752,26 @@ function TourEditorInner({
               <button
                 type="button"
                 role="tab"
+                aria-selected={rightPanel === "effects"}
+                className={cn(
+                  "flex-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium sm:text-xs",
+                  rightPanel === "effects"
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => {
+                  setAdjustmentsBypassed(false);
+                  setRightPanel("effects");
+                }}
+              >
+                Effects
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={rightPanel === "adjustments"}
                 className={cn(
-                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  "flex-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium sm:text-xs",
                   rightPanel === "adjustments"
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -784,6 +803,15 @@ function TourEditorInner({
                   onScenesChange={setScenes}
                   onFloorPlansChange={setFloorPlans}
                   onActiveSceneChange={setActiveSceneId}
+                />
+              ) : rightPanel === "effects" ? (
+                <EffectsPanel
+                  tourId={tour.id}
+                  values={effects}
+                  onChange={setEffects}
+                  onReplayIntro={() =>
+                    setIntroReplayNonce((n) => n + 1)
+                  }
                 />
               ) : rightPanel === "adjustments" ? (
                 <AdjustmentsPanel

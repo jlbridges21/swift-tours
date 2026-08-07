@@ -1,13 +1,9 @@
 /**
- * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql (+ 0002–0009).
- *
- * Overwrite this file after applying migrations:
+ * Database types. Overwrite after applying migrations:
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  *
- * Project ref: Supabase Dashboard → Project Settings → General → Reference ID
- * (also the subdomain in NEXT_PUBLIC_SUPABASE_URL).
+ * (Requires `supabase login` or SUPABASE_ACCESS_TOKEN.)
  */
 export type Json =
   | string

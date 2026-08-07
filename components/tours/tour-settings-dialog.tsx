@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
@@ -30,31 +29,11 @@ import {
 } from "@/lib/hotspot-styles";
 import type { TourListItem } from "@/lib/queries/tours";
 import { cn } from "@/lib/utils";
-import {
-  INTRO_EFFECTS,
-  TRANSITION_EFFECTS,
-  isIntroEffect,
-  isTransitionEffect,
-  type IntroEffect,
-  type TransitionEffect,
-} from "@/lib/viewer-effects";
 
 type TourSettingsDialogProps = {
   tour: TourListItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-};
-
-const INTRO_LABELS: Record<IntroEffect, string> = {
-  none: "None",
-  little_planet: "Little planet",
-};
-
-const TRANSITION_LABELS: Record<TransitionEffect, string> = {
-  none: "None (cut)",
-  fade: "Fade",
-  black: "Fade through black",
-  white: "Fade through white",
 };
 
 export function TourSettingsDialog({
@@ -73,27 +52,6 @@ export function TourSettingsDialog({
   const [defaultColor, setDefaultColor] = useState(
     sanitizeHotspotColor(tour.default_hotspot_color),
   );
-  const [introEffect, setIntroEffect] = useState<IntroEffect>(
-    isIntroEffect(tour.intro_effect) ? tour.intro_effect : "none",
-  );
-  const [transitionEffect, setTransitionEffect] = useState<TransitionEffect>(
-    isTransitionEffect(tour.transition_effect)
-      ? tour.transition_effect
-      : "fade",
-  );
-  const [transitionSpeed, setTransitionSpeed] = useState(
-    tour.transition_speed ?? 1500,
-  );
-  const [transitionZoom, setTransitionZoom] = useState(
-    tour.transition_zoom ?? true,
-  );
-  const [transitionRotation, setTransitionRotation] = useState(
-    tour.transition_rotation ?? true,
-  );
-  const [gyroscopeEnabled, setGyroscopeEnabled] = useState(
-    tour.gyroscope_enabled ?? true,
-  );
-  const [vrEnabled, setVrEnabled] = useState(tour.vr_enabled ?? true);
   const [pending, startTransition] = useTransition();
 
   function handleOpenChange(next: boolean) {
@@ -107,19 +65,6 @@ export function TourSettingsDialog({
           : "arrow",
       );
       setDefaultColor(sanitizeHotspotColor(tour.default_hotspot_color));
-      setIntroEffect(
-        isIntroEffect(tour.intro_effect) ? tour.intro_effect : "none",
-      );
-      setTransitionEffect(
-        isTransitionEffect(tour.transition_effect)
-          ? tour.transition_effect
-          : "fade",
-      );
-      setTransitionSpeed(tour.transition_speed ?? 1500);
-      setTransitionZoom(tour.transition_zoom ?? true);
-      setTransitionRotation(tour.transition_rotation ?? true);
-      setGyroscopeEnabled(tour.gyroscope_enabled ?? true);
-      setVrEnabled(tour.vr_enabled ?? true);
     }
     onOpenChange(next);
   }
@@ -133,13 +78,6 @@ export function TourSettingsDialog({
         is_public: isPublic,
         default_hotspot_shape: defaultShape,
         default_hotspot_color: defaultColor,
-        intro_effect: introEffect,
-        transition_effect: transitionEffect,
-        transition_speed: transitionSpeed,
-        transition_zoom: transitionZoom,
-        transition_rotation: transitionRotation,
-        gyroscope_enabled: gyroscopeEnabled,
-        vr_enabled: vrEnabled,
       });
 
       if (result.error) {
@@ -158,7 +96,8 @@ export function TourSettingsDialog({
         <DialogHeader>
           <DialogTitle>Tour settings</DialogTitle>
           <DialogDescription>
-            Update the title, description, visibility, and viewer effects.
+            Update the title, description, and visibility. Viewer effects live
+            in the editor under the Effects tab.
           </DialogDescription>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
@@ -259,154 +198,6 @@ export function TourSettingsDialog({
                 onChange={(event) =>
                   setDefaultColor(sanitizeHotspotColor(event.target.value))
                 }
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-3 border-t border-foreground/10 pt-4">
-            <div>
-              <Label>Effects</Label>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Gyroscope and VR buttons only appear on phones — missing them on
-                desktop is expected.
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-xs">Intro effect</Label>
-              <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
-                {INTRO_EFFECTS.map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    disabled={pending}
-                    className={cn(
-                      "rounded-md px-2 py-1.5 text-xs font-medium",
-                      introEffect === value
-                        ? "bg-background shadow-sm"
-                        : "text-muted-foreground",
-                    )}
-                    onClick={() => setIntroEffect(value)}
-                  >
-                    {INTRO_LABELS[value]}
-                  </button>
-                ))}
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="w-full"
-                disabled={introEffect !== "little_planet"}
-                nativeButton={false}
-                render={
-                  <Link
-                    href={`/dashboard/tours/${tour.id}/preview`}
-                    target="_blank"
-                    rel="noreferrer"
-                  />
-                }
-              >
-                Replay intro
-              </Button>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor={`transition-${tour.id}`} className="text-xs">
-                Transition
-              </Label>
-              <select
-                id={`transition-${tour.id}`}
-                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                value={transitionEffect}
-                disabled={pending}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  if (isTransitionEffect(value)) setTransitionEffect(value);
-                }}
-              >
-                {TRANSITION_EFFECTS.map((value) => (
-                  <option key={value} value={value}>
-                    {TRANSITION_LABELS[value]}
-                  </option>
-                ))}
-              </select>
-              <div className="flex items-center justify-between gap-2">
-                <Label className="text-xs font-normal">
-                  Speed ({transitionSpeed} ms)
-                </Label>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  300–5000
-                </span>
-              </div>
-              <input
-                type="range"
-                min={300}
-                max={5000}
-                step={50}
-                value={transitionSpeed}
-                disabled={pending}
-                onChange={(event) =>
-                  setTransitionSpeed(Number(event.target.value))
-                }
-                className="w-full accent-foreground"
-              />
-              <div className="flex items-center justify-between gap-4">
-                <Label
-                  htmlFor={`tz-${tour.id}`}
-                  className="flex-1 text-xs font-normal"
-                >
-                  Zoom through (toward hotspot)
-                </Label>
-                <Switch
-                  id={`tz-${tour.id}`}
-                  checked={transitionZoom}
-                  onCheckedChange={setTransitionZoom}
-                  disabled={pending}
-                />
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <Label
-                  htmlFor={`tr-${tour.id}`}
-                  className="flex-1 text-xs font-normal"
-                >
-                  Rotate toward hotspot
-                </Label>
-                <Switch
-                  id={`tr-${tour.id}`}
-                  checked={transitionRotation}
-                  onCheckedChange={setTransitionRotation}
-                  disabled={pending}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-4">
-              <Label
-                htmlFor={`gyro-${tour.id}`}
-                className="flex-1 text-xs font-normal"
-              >
-                Allow gyroscope control
-              </Label>
-              <Switch
-                id={`gyro-${tour.id}`}
-                checked={gyroscopeEnabled}
-                onCheckedChange={setGyroscopeEnabled}
-                disabled={pending}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4">
-              <Label
-                htmlFor={`vr-${tour.id}`}
-                className="flex-1 text-xs font-normal"
-              >
-                Allow cardboard VR (stereo)
-              </Label>
-              <Switch
-                id={`vr-${tour.id}`}
-                checked={vrEnabled}
-                onCheckedChange={setVrEnabled}
-                disabled={pending}
               />
             </div>
           </div>

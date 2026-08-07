@@ -520,6 +520,8 @@ export function PanoramaViewer({
   const introPendingRef = useRef(false);
   const introHandleRef = useRef<LittlePlanetHandle | null>(null);
   const introRanRef = useRef(false);
+  /** First texture + orientation applied; safe to fade the canvas in. */
+  const [panoramaRevealed, setPanoramaRevealed] = useState(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadTimedOut, setLoadTimedOut] = useState(false);
@@ -571,11 +573,13 @@ export function PanoramaViewer({
     setLoadError(null);
     setLoadTimedOut(false);
     setInfoOverlay(null);
+    setPanoramaRevealed(false);
 
     const nodes = buildNodes(scenes, hotspots, mode, nadirSettings);
     const startId = resolveStartId(scenes, currentSceneId ?? startSceneId);
     let cancelled = false;
     let loadTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let revealRaf = 0;
 
     const wantIntro =
       runIntro &&
@@ -584,6 +588,16 @@ export function PanoramaViewer({
     introPendingRef.current = wantIntro;
     introRanRef.current = false;
     introHandleRef.current = null;
+
+    const revealPanorama = () => {
+      if (cancelled) return;
+      // Double rAF: apply orientation this frame, paint next, then fade in.
+      revealRaf = requestAnimationFrame(() => {
+        revealRaf = requestAnimationFrame(() => {
+          if (!cancelled) setPanoramaRevealed(true);
+        });
+      });
+    };
 
     // Create the viewer WITHOUT feeding nodes into plugin config. Plugin.init()
     // would otherwise call setNodes→setCurrentNode before our React effects run;
@@ -614,11 +628,11 @@ export function PanoramaViewer({
         VirtualTourPlugin.withConfig({
           dataMode: "client",
           positionMode: "manual",
-          transitionOptions: (_to, _from, fromLink) => {
+          transitionOptions: (to, _from, fromLink) => {
             const resolved = resolveTransitionOptions(
               viewerEffectsRef.current.transition,
             );
-            return {
+            const base = {
               showLoader: resolved.showLoader,
               effect: resolved.effect,
               speed: resolved.speed,
@@ -629,6 +643,33 @@ export function PanoramaViewer({
                   ? resolved.zoomTo
                   : undefined,
             };
+
+            // Bake initial view into setPanorama for non-link navigations so the
+            // texture never appears at the wrong angle (pano XMP / 0,0) and then
+            // snaps. Link navigations keep fromLinkPosition from the VT plugin.
+            if (fromLink || introPendingRef.current) {
+              return base;
+            }
+
+            const data = to.data as
+              | { initialYaw?: number; initialPitch?: number }
+              | undefined;
+            if (
+              typeof data?.initialYaw === "number" &&
+              typeof data?.initialPitch === "number"
+            ) {
+              return {
+                ...base,
+                rotateTo: {
+                  yaw: data.initialYaw,
+                  pitch: data.initialPitch,
+                },
+                // Apply as baked position, not a visible rotate animation.
+                rotation: false,
+              };
+            }
+
+            return base;
           },
         }),
       ],
@@ -701,25 +742,32 @@ export function PanoramaViewer({
       setInfoOverlay(null);
       onSceneChangeRef.current?.(event.node.id);
 
-      // First-scene intro owns the camera — skip applyNodeInitialView once.
+      // First-scene intro owns the camera — start only once texture is ready.
       if (introPendingRef.current && !event.data?.fromLink) {
-        // Only start once the first texture is ready (never during bootstrap).
         if (viewer.state.ready) {
           startIntroIfNeeded(event.node);
+          revealPanorama();
         }
         return;
       }
 
-      applyNodeInitialView(viewer, event.node, event.data?.fromLink);
+      // Do NOT viewer.rotate() here. Non-link navigations bake initial view into
+      // setPanorama via transitionOptions.rotateTo (as position). A post-load
+      // rotate was the visible snap. Link navigations keep fromLinkPosition.
     };
     tour.addEventListener("node-changed", handleNodeChanged);
 
-    // Intro runs only after the first panorama has fully loaded — never during
-    // the setNodes bootstrap texture fetch. Also retried from node-changed.
+    // Intro / reveal only after the first panorama has fully loaded — never
+    // during the setNodes bootstrap texture fetch.
     const handleReady = () => {
       if (cancelled) return;
       const node = tour.getCurrentNode();
-      if (node) startIntroIfNeeded(node);
+      if (node && introPendingRef.current) {
+        startIntroIfNeeded(node);
+      } else if (node && !introPendingRef.current) {
+        applyNodeInitialView(viewer, node, null);
+      }
+      revealPanorama();
     };
     viewer.addEventListener("ready", handleReady);
 
@@ -816,6 +864,7 @@ export function PanoramaViewer({
     return () => {
       cancelled = true;
       clearLoadTimeout();
+      if (revealRaf) cancelAnimationFrame(revealRaf);
       bootstrappingRef.current = false;
       bootstrapSceneIdRef.current = null;
       introHandleRef.current?.cancel();
@@ -1297,7 +1346,23 @@ export function PanoramaViewer({
         className,
       )}
     >
-      <div ref={containerRef} className="size-full" style={viewerHostStyle} />
+      <div
+        ref={containerRef}
+        className={cn(
+          "size-full transition-opacity duration-300 ease-out",
+          panoramaRevealed ? "opacity-100" : "opacity-0",
+        )}
+        style={viewerHostStyle}
+      />
+
+      {!panoramaRevealed && !showFailure ? (
+        <div
+          className="absolute inset-0 z-[80] flex items-center justify-center bg-black"
+          aria-hidden
+        >
+          <div className="size-8 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+        </div>
+      ) : null}
 
       {showFailure ? (
         <div className="absolute inset-0 z-[90] flex flex-col items-center justify-center gap-3 bg-black/80 p-6 text-center text-sm text-white">

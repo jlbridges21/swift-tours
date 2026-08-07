@@ -219,15 +219,30 @@ export function nadirSamplePath(scene: {
   return scene.storage_path;
 }
 
-/** Map 0.1–1.0 tour size into imageLayer pixel size (PSV scales by /100). */
+/** Map 0.1–1.0 tour size → angular half-extent (radians) above the nadir. */
+export function nadirAngularExtent(nadirSize: number): number {
+  const clamped = Math.min(1, Math.max(0.1, nadirSize));
+  // ~0.12 rad (~7°) at min → ~0.55 rad (~31°) at max — readable floor disc.
+  return 0.1 + 0.45 * clamped;
+}
+
+/**
+ * @deprecated Prefer four-corner placement. Kept so size math stays documented:
+ * PSV scales imageLayer as width/100; with SPHERE_RADIUS=10, pixel sizes 650–2000
+ * yield world scales 6.5–20 — already large enough. Size was never the bug.
+ */
 export function nadirLayerPixelSize(nadirSize: number): number {
   const clamped = Math.min(1, Math.max(0.1, nadirSize));
   return Math.round(500 + 1500 * clamped);
 }
 
 /**
- * Flat floor layer at the nadir. Uses MarkersPlugin `imageLayer` (not `image`)
- * with pitch rotation so the plane lies on the floor instead of facing the camera.
+ * Horizontal floor disc at the nadir via four corner positions.
+ *
+ * PSV 5 has no `orientation: 'horizontal'`. A single `position` at pitch=-π/2
+ * places the group at (0,-R,0) then `lookAt(0,-R,0)` — degenerate — so the
+ * plane is edge-on or invisible. Four equal-pitch corners form a horizontal
+ * chord plane above the nadir without lookAt.
  */
 export function buildNadirMarkerConfig(options: {
   imageUrl: string;
@@ -238,23 +253,38 @@ export function buildNadirMarkerConfig(options: {
 }): {
   id: string;
   imageLayer: string;
-  position: { yaw: number; pitch: number };
-  size: { width: number; height: number };
+  position: [
+    { yaw: number; pitch: number },
+    { yaw: number; pitch: number },
+    { yaw: number; pitch: number },
+    { yaw: number; pitch: number },
+  ];
   opacity: number;
-  rotation: { pitch: number; yaw: number };
   hideList: boolean;
   data: { nadir: true };
 } {
-  const px = nadirLayerPixelSize(options.size);
-  const yawRad = ((options.rotationDegrees % 360) * Math.PI) / 180;
+  const elev = nadirAngularExtent(options.size);
+  const spin = ((options.rotationDegrees % 360) * Math.PI) / 180;
+  const pitch = -Math.PI / 2 + elev;
+
+  // Clockwise from top-left (PSV imageLayer convention). Same pitch → horizontal.
+  const corners: [
+    { yaw: number; pitch: number },
+    { yaw: number; pitch: number },
+    { yaw: number; pitch: number },
+    { yaw: number; pitch: number },
+  ] = [
+    { yaw: spin + 0, pitch },
+    { yaw: spin + Math.PI / 2, pitch },
+    { yaw: spin + Math.PI, pitch },
+    { yaw: spin + (3 * Math.PI) / 2, pitch },
+  ];
+
   return {
     id: NADIR_MARKER_ID,
     imageLayer: options.imageUrl,
-    position: { yaw: 0, pitch: -Math.PI / 2 },
-    size: { width: px, height: px },
+    position: corners,
     opacity: Math.min(1, Math.max(0.1, options.opacity)),
-    // pitch π/2 lays the plane flat; yaw spins the logo on the floor.
-    rotation: { pitch: Math.PI / 2, yaw: yawRad },
     hideList: true,
     data: { nadir: true },
   };

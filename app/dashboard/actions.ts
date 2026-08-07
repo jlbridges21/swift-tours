@@ -192,6 +192,96 @@ export async function updateTour(
   return {};
 }
 
+export async function updateTourEffects(
+  id: string,
+  input: {
+    intro_effect?: string;
+    transition_effect?: string;
+    transition_speed?: number;
+    transition_zoom?: boolean;
+    transition_rotation?: boolean;
+    gyroscope_enabled?: boolean;
+    vr_enabled?: boolean;
+  },
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in to update a tour." };
+  }
+
+  if (
+    input.intro_effect !== undefined &&
+    !isIntroEffect(input.intro_effect)
+  ) {
+    return { error: "Invalid intro effect." };
+  }
+  if (
+    input.transition_effect !== undefined &&
+    !isTransitionEffect(input.transition_effect)
+  ) {
+    return { error: "Invalid transition effect." };
+  }
+  if (
+    input.transition_speed !== undefined &&
+    (input.transition_speed < 300 || input.transition_speed > 5000)
+  ) {
+    return { error: "Transition speed must be between 300 and 5000 ms." };
+  }
+
+  const { data: existing } = await supabase
+    .from("tours")
+    .select("id, owner_id, slug")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!existing || existing.owner_id !== user.id) {
+    return { error: "Tour not found." };
+  }
+
+  const { error } = await supabase
+    .from("tours")
+    .update({
+      ...(input.intro_effect !== undefined
+        ? { intro_effect: input.intro_effect }
+        : {}),
+      ...(input.transition_effect !== undefined
+        ? { transition_effect: input.transition_effect }
+        : {}),
+      ...(input.transition_speed !== undefined
+        ? { transition_speed: input.transition_speed }
+        : {}),
+      ...(input.transition_zoom !== undefined
+        ? { transition_zoom: input.transition_zoom }
+        : {}),
+      ...(input.transition_rotation !== undefined
+        ? { transition_rotation: input.transition_rotation }
+        : {}),
+      ...(input.gyroscope_enabled !== undefined
+        ? { gyroscope_enabled: input.gyroscope_enabled }
+        : {}),
+      ...(input.vr_enabled !== undefined
+        ? { vr_enabled: input.vr_enabled }
+        : {}),
+    })
+    .eq("id", id);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath(`/dashboard/tours/${id}/edit`);
+  if (existing.slug) {
+    revalidatePath(`/tour/${existing.slug}`);
+    revalidatePath(`/embed/${existing.slug}`);
+  }
+  return {};
+}
+
 export async function updateTourNadir(
   id: string,
   input: {
