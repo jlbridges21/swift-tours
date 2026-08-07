@@ -8,6 +8,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { deleteTour, duplicateTour } from "@/app/dashboard/actions";
+import { EmbedDialog } from "@/components/tours/embed-dialog";
 import { TourSettingsDialog } from "@/components/tours/tour-settings-dialog";
 import {
   AlertDialog,
@@ -43,6 +44,7 @@ type TourCardProps = {
 export function TourCard({ tour, priority = false }: TourCardProps) {
   const router = useRouter();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [embedOpen, setEmbedOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -155,6 +157,9 @@ export function TourCard({ tour, priority = false }: TourCardProps) {
               <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
                 Settings
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setEmbedOpen(true)}>
+                Embed / share
+              </DropdownMenuItem>
               <DropdownMenuItem disabled={pending} onClick={handleDuplicate}>
                 {pending ? "Working…" : "Duplicate"}
               </DropdownMenuItem>
@@ -175,6 +180,12 @@ export function TourCard({ tour, priority = false }: TourCardProps) {
         tour={tour}
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
+      />
+
+      <EmbedDialog
+        tour={tour}
+        open={embedOpen}
+        onOpenChange={setEmbedOpen}
       />
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>

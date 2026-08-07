@@ -22,6 +22,22 @@ const nextConfig: NextConfig = {
         ]
       : [],
   },
+  async headers() {
+    return [
+      {
+        // Allow any site to iframe /embed/* (Kuula-style embeds).
+        // Do NOT set X-Frame-Options here — it has no wildcard and would
+        // override frame-ancestors in some browsers.
+        source: "/embed/:path*",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: "frame-ancestors *",
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

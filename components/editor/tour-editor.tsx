@@ -23,6 +23,7 @@ import {
   SaveStatusProvider,
   useSaveStatus,
 } from "@/components/editor/save-status";
+import { EmbedDialog } from "@/components/tours/embed-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -83,6 +84,7 @@ function TourEditorInner({
   );
   const [movingHotspotId, setMovingHotspotId] = useState<string | null>(null);
   const [placeDraft, setPlaceDraft] = useState<PlaceHotspotDraft | null>(null);
+  const [embedOpen, setEmbedOpen] = useState(false);
 
   useEffect(() => {
     setScenes(initialScenes);
@@ -407,6 +409,7 @@ function TourEditorInner({
   }
 
   return (
+    <>
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <div
         className="flex border-b bg-amber-50 px-4 py-2 text-center text-xs text-amber-950 lg:hidden dark:bg-amber-950/40 dark:text-amber-100"
@@ -442,6 +445,14 @@ function TourEditorInner({
 
         <div className="ml-auto flex items-center gap-3">
           <SaveStatusIndicator />
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => setEmbedOpen(true)}
+          >
+            Embed
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -560,5 +571,13 @@ function TourEditorInner({
         </div>
       </div>
     </div>
+
+    <EmbedDialog
+      tour={tour}
+      scenes={scenes.map((scene) => ({ id: scene.id, name: scene.name }))}
+      open={embedOpen}
+      onOpenChange={setEmbedOpen}
+    />
+    </>
   );
 }

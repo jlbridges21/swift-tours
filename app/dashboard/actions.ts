@@ -129,8 +129,72 @@ export async function updateTour(
   revalidatePath(`/dashboard/tours/${id}/edit`);
   if (tour?.slug) {
     revalidatePath(`/tour/${tour.slug}`);
+    revalidatePath(`/embed/${tour.slug}`);
   }
   return {};
+}
+
+export async function setTourPublic(
+  id: string,
+  isPublic: boolean,
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in to update a tour." };
+  }
+
+  const { data: tour, error } = await supabase
+    .from("tours")
+    .update({ is_public: isPublic })
+    .eq("id", id)
+    .eq("owner_id", user.id)
+    .select("slug")
+    .maybeSingle();
+
+  if (error) {
+    return { error: error.message };
+  }
+  if (!tour) {
+    return { error: "Tour not found." };
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath(`/dashboard/tours/${id}/edit`);
+  revalidatePath(`/tour/${tour.slug}`);
+  revalidatePath(`/embed/${tour.slug}`);
+  return {};
+}
+
+export async function listOwnedTourScenes(
+  tourId: string,
+): Promise<{ id: string; name: string }[]> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return [];
+
+  const { data: tour } = await supabase
+    .from("tours")
+    .select("id")
+    .eq("id", tourId)
+    .eq("owner_id", user.id)
+    .maybeSingle();
+
+  if (!tour) return [];
+
+  const { data } = await supabase
+    .from("scenes")
+    .select("id, name")
+    .eq("tour_id", tourId)
+    .order("position", { ascending: true });
+
+  return data ?? [];
 }
 
 export async function deleteTour(id: string): Promise<ActionResult> {
@@ -189,6 +253,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   revalidatePath("/dashboard");
   if (existing?.slug) {
     revalidatePath(`/tour/${existing.slug}`);
+    revalidatePath(`/embed/${existing.slug}`);
   }
   return {};
 }

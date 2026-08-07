@@ -1,6 +1,6 @@
 /**
  * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql (+ 0002, 0003).
+ * supabase/migrations/0001_initial_schema.sql (+ 0002–0004).
  *
  * Overwrite this file after applying migrations:
  *
@@ -195,16 +195,19 @@ export type Database = {
           id: string;
           tour_id: string;
           viewed_at: string;
+          referrer: string | null;
         };
         Insert: {
           id?: string;
           tour_id: string;
           viewed_at?: string;
+          referrer?: string | null;
         };
         Update: {
           id?: string;
           tour_id?: string;
           viewed_at?: string;
+          referrer?: string | null;
         };
         Relationships: [
           {

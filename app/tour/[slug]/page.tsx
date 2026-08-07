@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { TourViewerShell } from "@/components/viewer/tour-viewer-shell";
 import { getPublicTourBySlug } from "@/lib/queries/public-tours";
+import { siteOrigin } from "@/lib/site-url";
 import { publicUrl } from "@/lib/storage";
 
 export const revalidate = 60;
@@ -15,16 +16,6 @@ export async function generateStaticParams() {
 type PageProps = {
   params: Promise<{ slug: string }>;
 };
-
-function siteOrigin(): string {
-  if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "");
-  }
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-  return "http://localhost:3000";
-}
 
 export async function generateMetadata({
   params,

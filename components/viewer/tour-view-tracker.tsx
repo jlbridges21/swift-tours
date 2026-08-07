@@ -16,7 +16,18 @@ export function TourViewTracker({ tourId }: TourViewTrackerProps) {
       // sessionStorage unavailable — still attempt one POST.
     }
 
-    void fetch(`/api/tours/${tourId}/view`, { method: "POST" }).catch(() => {
+    let referrer = "";
+    try {
+      referrer = document.referrer || "";
+    } catch {
+      referrer = "";
+    }
+
+    void fetch(`/api/tours/${tourId}/view`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ referrer }),
+    }).catch(() => {
       // Analytics must never break the viewer.
     });
   }, [tourId]);
