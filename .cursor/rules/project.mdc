@@ -1,0 +1,36 @@
+---
+alwaysApply: true
+---
+
+# TourBuilder — project conventions
+
+## Stack
+
+- Next.js App Router, TypeScript strict, Tailwind, shadcn/ui
+- Supabase (Postgres + Auth + Storage)
+- Deployed on Vercel
+
+## React
+
+- Default to Server Components. Add `'use client'` only when a component needs browser APIs, WebGL, or event handlers.
+
+## Supabase clients
+
+- Use `@/lib/supabase/server` in Server Components and Route Handlers.
+- Use `@/lib/supabase/client` in client components.
+- Never import one into the other.
+- Never expose `SUPABASE_SERVICE_ROLE_KEY` to client code.
+
+## Security
+
+- Security is enforced by Postgres Row Level Security, not by client-side checks.
+- Every new table gets RLS policies in the same migration.
+
+## Data & mutations
+
+- Prefer Server Actions over API routes for mutations.
+- No `any`. Use the generated Supabase types from `@/types/database.ts` once they exist.
+
+## Code organization
+
+- Keep files focused; extract a component once a file passes ~200 lines.
