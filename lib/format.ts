@@ -1,3 +1,5 @@
+import { publicUrl } from "@/lib/storage";
+
 export function formatRelativeDate(isoDate: string): string {
   const date = new Date(isoDate);
   const diffMs = date.getTime() - Date.now();
@@ -22,9 +24,9 @@ export function formatRelativeDate(isoDate: string): string {
   return rtf.format(Math.round(diffMonth / 12), "year");
 }
 
-export function panoramaPublicUrl(path: string | null | undefined): string | null {
+export function panoramaPublicUrl(
+  path: string | null | undefined,
+): string | null {
   if (!path) return null;
-  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!base) return null;
-  return `${base}/storage/v1/object/public/panoramas/${path}`;
+  return publicUrl(path);
 }

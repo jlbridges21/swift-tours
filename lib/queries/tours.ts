@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import type { Tour } from "@/types";
+import type { Scene, Tour } from "@/types";
 
 export type TourListItem = Tour & {
   scene_count: number;
@@ -55,4 +55,20 @@ export async function getTourById(id: string): Promise<Tour | null> {
   }
 
   return data;
+}
+
+export async function listScenesForTour(tourId: string): Promise<Scene[]> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("scenes")
+    .select("*")
+    .eq("tour_id", tourId)
+    .order("position", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
 }
