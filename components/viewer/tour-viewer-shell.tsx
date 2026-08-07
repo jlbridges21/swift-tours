@@ -191,6 +191,11 @@ export function TourViewerShell({
           currentSceneId={currentSceneId ?? undefined}
           mode="view"
           className="h-full w-full"
+          nadirSettings={{
+            size: tour.nadir_size,
+            opacity: tour.nadir_opacity,
+            rotation: tour.nadir_rotation,
+          }}
           onSceneChange={(id) => {
             setCurrentSceneId(id);
             setFirstSceneReady(true);

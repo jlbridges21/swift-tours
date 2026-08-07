@@ -137,7 +137,7 @@ export function HotspotPanel({
     selected != null && selected.scene_id === activeSceneId ? selected : null;
 
   return (
-    <aside className="flex h-full w-[300px] shrink-0 flex-col border-l bg-background">
+    <aside className="flex h-full w-full min-h-0 flex-col bg-background">
       <div className="border-b px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
         {editing ? (
           <button

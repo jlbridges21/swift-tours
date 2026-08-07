@@ -4,7 +4,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { HEX_COLOR_RE, isHotspotShape } from "@/lib/hotspot-styles";
+import { isNadirType } from "@/lib/nadir";
 import { generateSlug } from "@/lib/slug";
+import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
 import type { HotspotInsert, SceneInsert, TourInsert } from "@/types";
 
@@ -134,6 +136,82 @@ export async function updateTour(
   return {};
 }
 
+export async function updateTourNadir(
+  id: string,
+  input: {
+    nadir_type?: string;
+    nadir_logo_path?: string | null;
+    nadir_size?: number;
+    nadir_opacity?: number;
+    nadir_rotation?: number;
+  },
+): Promise<ActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in to update a tour." };
+  }
+
+  const patch: {
+    nadir_type?: string;
+    nadir_logo_path?: string | null;
+    nadir_size?: number;
+    nadir_opacity?: number;
+    nadir_rotation?: number;
+  } = {};
+
+  if (input.nadir_type !== undefined) {
+    if (!isNadirType(input.nadir_type)) {
+      return { error: "Invalid nadir type." };
+    }
+    patch.nadir_type = input.nadir_type;
+  }
+  if (input.nadir_logo_path !== undefined) {
+    patch.nadir_logo_path = input.nadir_logo_path;
+  }
+  if (input.nadir_size !== undefined) {
+    if (input.nadir_size < 0.1 || input.nadir_size > 1) {
+      return { error: "Nadir size must be between 0.1 and 1.0." };
+    }
+    patch.nadir_size = input.nadir_size;
+  }
+  if (input.nadir_opacity !== undefined) {
+    if (input.nadir_opacity < 0.1 || input.nadir_opacity > 1) {
+      return { error: "Nadir opacity must be between 0.1 and 1.0." };
+    }
+    patch.nadir_opacity = input.nadir_opacity;
+  }
+  if (input.nadir_rotation !== undefined) {
+    patch.nadir_rotation = input.nadir_rotation;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return {};
+  }
+
+  const { data: tour, error } = await supabase
+    .from("tours")
+    .update(patch)
+    .eq("id", id)
+    .select("slug")
+    .maybeSingle();
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath("/dashboard");
+  revalidatePath(`/dashboard/tours/${id}/edit`);
+  if (tour?.slug) {
+    revalidatePath(`/tour/${tour.slug}`);
+    revalidatePath(`/embed/${tour.slug}`);
+  }
+  return {};
+}
+
 export async function setTourPublic(
   id: string,
   isPublic: boolean,
@@ -216,7 +294,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   // Collect storage paths before the row (and cascade) disappears.
   const { data: scenes, error: scenesError } = await supabase
     .from("scenes")
-    .select("storage_path, thumbnail_path, compat_path")
+    .select("storage_path, thumbnail_path, compat_path, nadir_patch_path")
     .eq("tour_id", id);
 
   if (scenesError) {
@@ -225,9 +303,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
 
   const paths: string[] = [];
   for (const scene of scenes ?? []) {
-    if (scene.storage_path) paths.push(scene.storage_path);
-    if (scene.compat_path) paths.push(scene.compat_path);
-    if (scene.thumbnail_path) paths.push(scene.thumbnail_path);
+    paths.push(...sceneObjectPaths(scene));
   }
 
   const CHUNK = 100;
@@ -288,6 +364,13 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
     title: `${original.title} (Copy)`,
     description: original.description,
     is_public: false,
+    default_hotspot_shape: original.default_hotspot_shape,
+    default_hotspot_color: original.default_hotspot_color,
+    nadir_type: original.nadir_type,
+    nadir_logo_path: original.nadir_logo_path,
+    nadir_size: original.nadir_size,
+    nadir_opacity: original.nadir_opacity,
+    nadir_rotation: original.nadir_rotation,
   });
 
   if ("error" in created) {
@@ -338,6 +421,8 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           width: scene.width,
           height: scene.height,
           file_size: scene.file_size,
+          nadir_patch_path: scene.nadir_patch_path,
+          nadir_disabled: scene.nadir_disabled,
           position: scene.position,
           initial_yaw: scene.initial_yaw,
           initial_pitch: scene.initial_pitch,
@@ -396,12 +481,27 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           copiedStoragePaths.push(newCompatPath);
         }
 
+        let newNadirPath: string | null = null;
+        if (scene.nadir_patch_path) {
+          newNadirPath = `${user.id}/${newTourId}/${newSceneId}_nadir.png`;
+          const { error: nadirCopyError } = await supabase.storage
+            .from("panoramas")
+            .copy(scene.nadir_patch_path, newNadirPath);
+
+          if (nadirCopyError) {
+            await rollback();
+            return { error: nadirCopyError.message };
+          }
+          copiedStoragePaths.push(newNadirPath);
+        }
+
         const { error: updateSceneError } = await supabase
           .from("scenes")
           .update({
             storage_path: newStoragePath,
             thumbnail_path: newThumbnailPath,
             compat_path: newCompatPath,
+            nadir_patch_path: newNadirPath,
           })
           .eq("id", newSceneId);
 

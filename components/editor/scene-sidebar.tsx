@@ -27,6 +27,7 @@ import {
   deleteScene,
   renameScene,
   reorderScenes,
+  updateSceneNadirDisabled,
 } from "@/app/dashboard/tours/[id]/actions";
 import { useSaveStatus } from "@/components/editor/save-status";
 import { SceneUploader } from "@/components/scenes/scene-uploader";
@@ -42,6 +43,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import type { Scene } from "@/types";
@@ -53,6 +56,9 @@ type SceneSidebarProps = {
   activeSceneId: string | null;
   onScenesChange: (scenes: Scene[]) => void;
   onActiveSceneChange: (sceneId: string | null) => void;
+  nadirType?: string;
+  nadirLogoPath?: string | null;
+  onNadirPatchReady?: (sceneId: string, nadirPatchPath: string) => void;
 };
 
 export function SceneSidebar({
@@ -62,6 +68,9 @@ export function SceneSidebar({
   activeSceneId,
   onScenesChange,
   onActiveSceneChange,
+  nadirType = "none",
+  nadirLogoPath = null,
+  onNadirPatchReady,
 }: SceneSidebarProps) {
   const { run } = useSaveStatus();
   const [deleteTarget, setDeleteTarget] = useState<Scene | null>(null);
@@ -78,6 +87,9 @@ export function SceneSidebar({
 
   const nextPosition =
     scenes.reduce((max, scene) => Math.max(max, scene.position), -1) + 1;
+
+  const activeScene =
+    scenes.find((scene) => scene.id === activeSceneId) ?? null;
 
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -215,11 +227,46 @@ export function SceneSidebar({
         )}
       </div>
 
-      <div className="border-t p-2">
+      <div className="space-y-2 border-t p-2">
+        {activeScene && nadirType !== "none" ? (
+          <div className="flex items-start justify-between gap-2 rounded-md bg-muted/50 px-2 py-2">
+            <Label
+              htmlFor="nadir-disabled"
+              className="text-xs leading-snug text-muted-foreground"
+            >
+              Disable nadir patch for this scene
+            </Label>
+            <Switch
+              id="nadir-disabled"
+              checked={activeScene.nadir_disabled}
+              onCheckedChange={(checked) => {
+                const previous = scenes;
+                onScenesChange(
+                  scenes.map((scene) =>
+                    scene.id === activeScene.id
+                      ? { ...scene, nadir_disabled: checked }
+                      : scene,
+                  ),
+                );
+                void run(() =>
+                  updateSceneNadirDisabled(activeScene.id, checked),
+                ).then((ok) => {
+                  if (!ok) {
+                    onScenesChange(previous);
+                    toast.error("Could not update nadir setting");
+                  }
+                });
+              }}
+            />
+          </div>
+        ) : null}
         <SceneUploader
           tourId={tourId}
           userId={userId}
           nextPosition={nextPosition}
+          nadirType={nadirType}
+          nadirLogoPath={nadirLogoPath}
+          onNadirPatchReady={onNadirPatchReady}
         />
       </div>
 

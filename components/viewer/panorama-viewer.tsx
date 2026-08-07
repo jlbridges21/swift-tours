@@ -36,6 +36,11 @@ import {
   isLabelVisibility,
   sanitizeHotspotColor,
 } from "@/lib/hotspot-styles";
+import {
+  buildNadirMarkerConfig,
+  isNadirMarkerId,
+  NADIR_MARKER_ID,
+} from "@/lib/nadir";
 import { cn } from "@/lib/utils";
 import type { Hotspot, Scene } from "@/types";
 
@@ -56,6 +61,8 @@ export type PanoramaViewerScene = Pick<
   | "height"
   | "initial_yaw"
   | "initial_pitch"
+  | "nadir_patch_path"
+  | "nadir_disabled"
 >;
 
 export type PanoramaViewerHotspot = Pick<
@@ -74,6 +81,13 @@ export type PanoramaViewerHotspot = Pick<
   | "style_animation"
   | "label_visibility"
 >;
+
+/** Tour-level nadir render settings (size/opacity/rotation are live; patch is per-scene). */
+export type PanoramaNadirSettings = {
+  size: number;
+  opacity: number;
+  rotation: number;
+};
 
 export type PanoramaClickPayload = {
   yaw: number;
@@ -96,6 +110,8 @@ export type PanoramaViewerProps = {
   ariaLabel?: string;
   /** Increment to force-close the info popover (Escape priority from parent). */
   closeInfoPopoverNonce?: number;
+  /** Floor patch size / opacity / spin — applied at render time. */
+  nadirSettings?: PanoramaNadirSettings;
   onSceneChange?: (sceneId: string) => void;
   onPanoramaClick?: (payload: PanoramaClickPayload) => void;
   onMarkerSelect?: (hotspotId: string) => void;
@@ -212,10 +228,30 @@ function panoramaUrlForScene(scene: PanoramaViewerScene): string {
   return publicUrl(path);
 }
 
+function nadirMarkerForScene(
+  scene: PanoramaViewerScene,
+  settings: PanoramaNadirSettings | undefined,
+): MarkerConfig | null {
+  if (
+    !settings ||
+    scene.nadir_disabled ||
+    !scene.nadir_patch_path
+  ) {
+    return null;
+  }
+  return buildNadirMarkerConfig({
+    imageUrl: publicUrl(scene.nadir_patch_path),
+    size: settings.size,
+    opacity: settings.opacity,
+    rotationDegrees: settings.rotation,
+  });
+}
+
 function buildNodes(
   scenes: PanoramaViewerScene[],
   hotspots: PanoramaViewerHotspot[],
   mode: "view" | "edit",
+  nadirSettings?: PanoramaNadirSettings,
 ): VirtualTourNode[] {
   return scenes.map((scene) => {
     const sceneHotspots = hotspots.filter(
@@ -251,9 +287,11 @@ function buildNodes(
     // View mode: style every hotspot as a MarkersPlugin marker (same HTML as
     // edit). Link navigation is handled in select-marker → setCurrentNode so
     // appearance stays identical. Empty VT links avoids the default 3D arrows.
-    const markers = sceneHotspots.map((hotspot) =>
+    const markers: MarkerConfig[] = sceneHotspots.map((hotspot) =>
       hotspotToMarkerConfig(hotspot, false, scenes),
     );
+    const nadir = nadirMarkerForScene(scene, nadirSettings);
+    if (nadir) markers.push(nadir);
 
     return {
       id: scene.id,
@@ -270,6 +308,7 @@ function buildNodes(
 function serializeNodesKey(
   nodes: VirtualTourNode[],
   mode: "view" | "edit",
+  nadirSettings?: PanoramaNadirSettings,
 ): string {
   if (mode === "edit") {
     return JSON.stringify(
@@ -283,8 +322,9 @@ function serializeNodesKey(
     );
   }
 
-  return JSON.stringify(
-    nodes.map((node) => ({
+  return JSON.stringify({
+    nadir: nadirSettings ?? null,
+    nodes: nodes.map((node) => ({
       id: node.id,
       panorama: node.panorama,
       thumbnail: node.thumbnail,
@@ -294,12 +334,15 @@ function serializeNodesKey(
         id: marker.id,
         position: marker.position,
         html: marker.html,
+        imageLayer: marker.imageLayer,
         size: marker.size,
+        opacity: marker.opacity,
+        rotation: marker.rotation,
         tooltip: marker.tooltip,
         data: marker.data,
       })),
     })),
-  );
+  });
 }
 
 function syncEditMarkers(
@@ -328,9 +371,30 @@ function syncEditMarkers(
   }
 
   for (const id of existingIds) {
-    if (!nextIds.has(id)) {
+    // Never remove the reserved nadir layer here — syncNadirMarker owns it.
+    if (!nextIds.has(id) && !isNadirMarkerId(id)) {
       markers.removeMarker(id);
     }
+  }
+}
+
+function syncNadirMarker(
+  markers: MarkersPlugin,
+  scene: PanoramaViewerScene | undefined,
+  settings: PanoramaNadirSettings | undefined,
+) {
+  const config = scene ? nadirMarkerForScene(scene, settings) : null;
+  const existing = markers.getMarkers().some((m) => isNadirMarkerId(m.id));
+
+  if (!config) {
+    if (existing) markers.removeMarker(NADIR_MARKER_ID);
+    return;
+  }
+
+  if (existing) {
+    markers.updateMarker(config);
+  } else {
+    markers.addMarker(config);
   }
 }
 
@@ -379,6 +443,7 @@ export function PanoramaViewer({
   className,
   ariaLabel,
   closeInfoPopoverNonce = 0,
+  nadirSettings,
   onSceneChange,
   onPanoramaClick,
   onMarkerSelect,
@@ -456,7 +521,7 @@ export function PanoramaViewer({
     setLoadTimedOut(false);
     setInfoOverlay(null);
 
-    const nodes = buildNodes(scenes, hotspots, mode);
+    const nodes = buildNodes(scenes, hotspots, mode, nadirSettings);
     const startId = resolveStartId(scenes, currentSceneId ?? startSceneId);
     let cancelled = false;
     let loadTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -485,7 +550,7 @@ export function PanoramaViewer({
     });
 
     viewerRef.current = viewer;
-    nodesKeyRef.current = serializeNodesKey(nodes, mode);
+    nodesKeyRef.current = serializeNodesKey(nodes, mode, nadirSettings);
     onViewerReadyRef.current?.(viewer);
 
     const tour = viewer.getPlugin<VirtualTourPlugin>(VirtualTourPlugin);
@@ -549,9 +614,15 @@ export function PanoramaViewer({
           targetSceneId?: string | null;
           yaw?: number;
           pitch?: number;
+          nadir?: boolean;
         };
       };
     }) => {
+      // Reserved floor overlay — never select, navigate, or open popovers.
+      if (isNadirMarkerId(event.marker.id) || event.marker.data?.nadir) {
+        return;
+      }
+
       if (modeRef.current === "edit") {
         onMarkerSelectRef.current?.(event.marker.id);
       }
@@ -600,6 +671,11 @@ export function PanoramaViewer({
         highlightedHotspotId,
         scenes,
       );
+      syncNadirMarker(
+        markersPlugin,
+        scenes.find((scene) => scene.id === currentSceneId),
+        nadirSettings,
+      );
     }
 
     // Listeners are attached — now start the tour in one shot.
@@ -636,8 +712,8 @@ export function PanoramaViewer({
     const viewer = viewerRef.current;
     if (!viewer || !hasScenes) return;
 
-    const nodes = buildNodes(scenes, hotspots, mode);
-    const key = serializeNodesKey(nodes, mode);
+    const nodes = buildNodes(scenes, hotspots, mode, nadirSettings);
+    const key = serializeNodesKey(nodes, mode, nadirSettings);
     if (key === nodesKeyRef.current) return;
     nodesKeyRef.current = key;
 
@@ -653,7 +729,7 @@ export function PanoramaViewer({
     bootstrappingRef.current = true;
     bootstrapSceneIdRef.current = nextStart;
     tour.setNodes(nodes, nextStart);
-  }, [scenes, hotspots, startSceneId, currentSceneId, hasScenes, mode]);
+  }, [scenes, hotspots, startSceneId, currentSceneId, hasScenes, mode, nadirSettings]);
 
   // Controlled scene selection (user / parent-driven).
   useEffect(() => {
@@ -698,6 +774,11 @@ export function PanoramaViewer({
       scenes,
       draggingIdRef.current,
     );
+    syncNadirMarker(
+      markersPlugin,
+      scenes.find((scene) => scene.id === currentSceneId),
+      nadirSettings,
+    );
   }, [
     mode,
     hasScenes,
@@ -706,6 +787,7 @@ export function PanoramaViewer({
     scenes,
     selectedHotspotId,
     highlightedHotspotId,
+    nadirSettings,
   ]);
 
   // Edit mode: drag markers to reposition (PSV has no built-in drag).
@@ -770,7 +852,7 @@ export function PanoramaViewer({
       const markerEl = markerElementFromTarget(event.target);
       if (!markerEl) return;
       const id = hotspotIdFromMarkerElement(markerEl);
-      if (!id) return;
+      if (!id || isNadirMarkerId(id)) return;
 
       const hotspot = hotspotsRef.current.find((item) => item.id === id);
       if (!hotspot) return;

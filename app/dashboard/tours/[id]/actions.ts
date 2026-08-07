@@ -12,6 +12,8 @@ import {
   sanitizeHotspotColor,
   validateStylePatch,
 } from "@/lib/hotspot-styles";
+import { isNadirType } from "@/lib/nadir";
+import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
 import type { Scene } from "@/types";
 
@@ -180,7 +182,9 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
 
   const { data: scene, error: sceneError } = await supabase
     .from("scenes")
-    .select("id, tour_id, storage_path, thumbnail_path, compat_path")
+    .select(
+      "id, tour_id, storage_path, thumbnail_path, compat_path, nadir_patch_path",
+    )
     .eq("id", sceneId)
     .maybeSingle();
 
@@ -198,13 +202,8 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
   }
 
   // Delete storage objects before the row — paths are lost once the row is gone.
-  const paths = [scene.storage_path];
-  if (scene.compat_path) {
-    paths.push(scene.compat_path);
-  }
-  if (scene.thumbnail_path) {
-    paths.push(scene.thumbnail_path);
-  }
+  // Four objects: full, compat, thumb, nadir.
+  const paths = sceneObjectPaths(scene);
 
   const { error: storageError } = await supabase.storage
     .from("panoramas")
@@ -707,5 +706,108 @@ export async function deleteHotspot(
   }
 
   revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function updateSceneNadirPatch(
+  sceneId: string,
+  nadirPatchPath: string | null,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id, nadir_patch_path")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+  if (!scene) {
+    return { error: "Scene not found." };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  if (
+    scene.nadir_patch_path &&
+    scene.nadir_patch_path !== nadirPatchPath
+  ) {
+    const { error: removeError } = await supabase.storage
+      .from("panoramas")
+      .remove([scene.nadir_patch_path]);
+    if (removeError) {
+      console.error("[updateSceneNadirPatch] storage remove failed", {
+        path: scene.nadir_patch_path,
+        message: removeError.message,
+      });
+    }
+  }
+
+  const { error } = await supabase
+    .from("scenes")
+    .update({ nadir_patch_path: nadirPatchPath })
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function updateSceneNadirDisabled(
+  sceneId: string,
+  disabled: boolean,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+  if (!scene) {
+    return { error: "Scene not found." };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { error } = await supabase
+    .from("scenes")
+    .update({ nadir_disabled: disabled })
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
   return {};
 }

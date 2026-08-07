@@ -37,19 +37,40 @@ export function thumbPath(
   return `${userId}/${tourId}/${sceneId}_thumb.jpg`;
 }
 
+/** Per-scene generated nadir (floor) patch PNG. */
+export function nadirPath(
+  userId: string,
+  tourId: string,
+  sceneId: string,
+): string {
+  return `${userId}/${tourId}/${sceneId}_nadir.png`;
+}
+
+/** Custom branding logo under the user's folder (RLS-safe). */
+export function brandingLogoPath(
+  userId: string,
+  fileId: string,
+  extension: ".png" | ".svg" | string = ".png",
+): string {
+  const ext = extension.startsWith(".") ? extension : `.${extension}`;
+  return `${userId}/branding/${fileId}${ext}`;
+}
+
 export function publicUrl(path: string): string {
   const { data } = storageClient().storage.from("panoramas").getPublicUrl(path);
   return data.publicUrl;
 }
 
-/** Collect all panorama objects for a scene (full, compat, thumb). */
+/** Collect all panorama objects for a scene (full, compat, thumb, nadir). */
 export function sceneObjectPaths(scene: {
   storage_path: string;
   thumbnail_path?: string | null;
   compat_path?: string | null;
+  nadir_patch_path?: string | null;
 }): string[] {
   const paths = [scene.storage_path];
   if (scene.compat_path) paths.push(scene.compat_path);
   if (scene.thumbnail_path) paths.push(scene.thumbnail_path);
+  if (scene.nadir_patch_path) paths.push(scene.nadir_patch_path);
   return paths;
 }

@@ -34,6 +34,7 @@ export const PanoramaViewer = dynamic(
 
 export type {
   PanoramaClickPayload,
+  PanoramaNadirSettings,
   PanoramaViewerHotspot,
   PanoramaViewerProps,
   PanoramaViewerScene,

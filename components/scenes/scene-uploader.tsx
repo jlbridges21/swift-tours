@@ -6,6 +6,8 @@ import { toast } from "sonner";
 
 import { createScene } from "@/app/dashboard/tours/[id]/actions";
 import { processPanorama, validatePanorama } from "@/lib/image";
+import { isNadirType } from "@/lib/nadir";
+import { uploadNadirPatchForScene } from "@/lib/nadir-upload";
 import { createClient } from "@/lib/supabase/client";
 import { compatPath, scenePath, thumbPath } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -32,6 +34,10 @@ type SceneUploaderProps = {
   tourId: string;
   userId: string;
   nextPosition: number;
+  /** When not 'none', generate a nadir patch after each scene is created (non-blocking). */
+  nadirType?: string;
+  nadirLogoPath?: string | null;
+  onNadirPatchReady?: (sceneId: string, nadirPatchPath: string) => void;
 };
 
 const CONCURRENCY = 3;
@@ -72,6 +78,9 @@ export function SceneUploader({
   tourId,
   userId,
   nextPosition,
+  nadirType = "none",
+  nadirLogoPath = null,
+  onNadirPatchReady,
 }: SceneUploaderProps) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -224,6 +233,26 @@ export function SceneUploader({
 
           outcomes.succeeded += 1;
           updateItem(item.key, { stage: "done" });
+
+          // Non-blocking: generate nadir patch after the scene row exists.
+          if (isNadirType(nadirType) && nadirType !== "none") {
+            void uploadNadirPatchForScene({
+              userId,
+              tourId,
+              scene: { id: item.sceneId, storage_path: storageFull },
+              type: nadirType,
+              logoPath: nadirLogoPath,
+            }).then((nadirResult) => {
+              if ("path" in nadirResult) {
+                onNadirPatchReady?.(item.sceneId, nadirResult.path);
+              } else {
+                console.error(
+                  "[nadir] auto-generate after upload failed",
+                  nadirResult.error,
+                );
+              }
+            });
+          }
         } catch (err) {
           if (uploadedPaths.length > 0) {
             const supabase = createClient();
@@ -255,7 +284,16 @@ export function SceneUploader({
 
       router.refresh();
     },
-    [nextPosition, router, tourId, updateItem, userId],
+    [
+      nextPosition,
+      router,
+      tourId,
+      updateItem,
+      userId,
+      nadirType,
+      nadirLogoPath,
+      onNadirPatchReady,
+    ],
   );
 
   function onSelect(fileList: FileList | null) {

@@ -1,6 +1,6 @@
 /**
  * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql (+ 0002–0005).
+ * supabase/migrations/0001_initial_schema.sql (+ 0002–0006).
  *
  * Overwrite this file after applying migrations:
  *
@@ -32,6 +32,11 @@ export type Database = {
           password_hash: string | null;
           default_hotspot_shape: string;
           default_hotspot_color: string;
+          nadir_type: string;
+          nadir_logo_path: string | null;
+          nadir_size: number;
+          nadir_opacity: number;
+          nadir_rotation: number;
           created_at: string;
           updated_at: string;
         };
@@ -46,6 +51,11 @@ export type Database = {
           password_hash?: string | null;
           default_hotspot_shape?: string;
           default_hotspot_color?: string;
+          nadir_type?: string;
+          nadir_logo_path?: string | null;
+          nadir_size?: number;
+          nadir_opacity?: number;
+          nadir_rotation?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -60,6 +70,11 @@ export type Database = {
           password_hash?: string | null;
           default_hotspot_shape?: string;
           default_hotspot_color?: string;
+          nadir_type?: string;
+          nadir_logo_path?: string | null;
+          nadir_size?: number;
+          nadir_opacity?: number;
+          nadir_rotation?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -91,6 +106,8 @@ export type Database = {
           width: number | null;
           height: number | null;
           file_size: number | null;
+          nadir_patch_path: string | null;
+          nadir_disabled: boolean;
           position: number;
           initial_yaw: number;
           initial_pitch: number;
@@ -106,6 +123,8 @@ export type Database = {
           width?: number | null;
           height?: number | null;
           file_size?: number | null;
+          nadir_patch_path?: string | null;
+          nadir_disabled?: boolean;
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
@@ -121,6 +140,8 @@ export type Database = {
           width?: number | null;
           height?: number | null;
           file_size?: number | null;
+          nadir_patch_path?: string | null;
+          nadir_disabled?: boolean;
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;

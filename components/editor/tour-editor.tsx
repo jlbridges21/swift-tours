@@ -19,6 +19,10 @@ import {
   useAutoReturnLinkPreference,
   type PlaceableHotspotType,
 } from "@/components/editor/hotspot-toolbar";
+import {
+  NadirSettings,
+  type NadirTourFields,
+} from "@/components/editor/nadir-settings";
 import { SceneSidebar } from "@/components/editor/scene-sidebar";
 import {
   SaveStatusIndicator,
@@ -40,6 +44,8 @@ import {
   isHotspotShape,
   sanitizeHotspotColor,
 } from "@/lib/hotspot-styles";
+import { isNadirMarkerId } from "@/lib/nadir";
+import { cn } from "@/lib/utils";
 import type { Hotspot, Scene, Tour } from "@/types";
 
 type TourEditorProps = {
@@ -85,6 +91,16 @@ function TourEditorInner({
   const [scenes, setScenes] = useState(initialScenes);
   const [hotspots, setHotspots] = useState(initialHotspots);
   const [title, setTitle] = useState(tour.title);
+  const [nadir, setNadir] = useState<NadirTourFields>({
+    nadir_type: tour.nadir_type,
+    nadir_logo_path: tour.nadir_logo_path,
+    nadir_size: tour.nadir_size,
+    nadir_opacity: tour.nadir_opacity,
+    nadir_rotation: tour.nadir_rotation,
+  });
+  const [rightPanel, setRightPanel] = useState<"hotspots" | "nadir">(
+    "hotspots",
+  );
   const [activeSceneId, setActiveSceneId] = useState<string | null>(
     initialScenes[0]?.id ?? null,
   );
@@ -110,6 +126,22 @@ function TourEditorInner({
   useEffect(() => {
     setTitle(tour.title);
   }, [tour.title]);
+
+  useEffect(() => {
+    setNadir({
+      nadir_type: tour.nadir_type,
+      nadir_logo_path: tour.nadir_logo_path,
+      nadir_size: tour.nadir_size,
+      nadir_opacity: tour.nadir_opacity,
+      nadir_rotation: tour.nadir_rotation,
+    });
+  }, [
+    tour.nadir_type,
+    tour.nadir_logo_path,
+    tour.nadir_size,
+    tour.nadir_opacity,
+    tour.nadir_rotation,
+  ]);
 
   useEffect(() => {
     if (scenes.length === 0) {
@@ -514,6 +546,17 @@ function TourEditorInner({
                 pruneHotspotsForScenes(next);
               }}
               onActiveSceneChange={setActiveSceneId}
+              nadirType={nadir.nadir_type}
+              nadirLogoPath={nadir.nadir_logo_path}
+              onNadirPatchReady={(sceneId, nadirPatchPath) => {
+                setScenes((prev) =>
+                  prev.map((scene) =>
+                    scene.id === sceneId
+                      ? { ...scene, nadir_patch_path: nadirPatchPath }
+                      : scene,
+                  ),
+                );
+              }}
             />
           </div>
 
@@ -544,10 +587,17 @@ function TourEditorInner({
                 mode="edit"
                 className="rounded-none"
                 closeInfoPopoverNonce={closeInfoPopoverNonce}
+                nadirSettings={{
+                  size: nadir.nadir_size,
+                  opacity: nadir.nadir_opacity,
+                  rotation: nadir.nadir_rotation,
+                }}
                 onInfoPopoverOpenChange={setInfoPopoverOpen}
                 onSceneChange={setActiveSceneId}
                 onMarkerSelect={(id) => {
+                  if (isNadirMarkerId(id)) return;
                   setSelectedHotspotId(id);
+                  setRightPanel("hotspots");
                 }}
                 onPanoramaClick={handlePanoramaClick}
                 onMarkerMoving={handleMarkerMoving}
@@ -586,17 +636,64 @@ function TourEditorInner({
             </div>
           </div>
 
-          <div className="order-3 hidden lg:flex">
-            <HotspotPanel
-              tourId={tour.id}
-              scenes={scenes}
-              hotspots={hotspots}
-              activeSceneId={activeSceneId}
-              selectedHotspotId={selectedHotspotId}
-              onSelect={setSelectedHotspotId}
-              onHotspotsChange={setHotspots}
-              onFaceHotspot={faceHotspot}
-            />
+          <div className="order-3 hidden w-[300px] shrink-0 flex-col border-l lg:flex">
+            <div
+              className="flex shrink-0 gap-1 border-b p-1"
+              role="tablist"
+              aria-label="Editor side panel"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPanel === "hotspots"}
+                className={cn(
+                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  rightPanel === "hotspots"
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setRightPanel("hotspots")}
+              >
+                Hotspots
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPanel === "nadir"}
+                className={cn(
+                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  rightPanel === "nadir"
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setRightPanel("nadir")}
+              >
+                Nadir patch
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {rightPanel === "nadir" ? (
+                <NadirSettings
+                  tourId={tour.id}
+                  userId={userId}
+                  scenes={scenes}
+                  values={nadir}
+                  onChange={setNadir}
+                  onScenesChange={setScenes}
+                />
+              ) : (
+                <HotspotPanel
+                  tourId={tour.id}
+                  scenes={scenes}
+                  hotspots={hotspots}
+                  activeSceneId={activeSceneId}
+                  selectedHotspotId={selectedHotspotId}
+                  onSelect={setSelectedHotspotId}
+                  onHotspotsChange={setHotspots}
+                  onFaceHotspot={faceHotspot}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
