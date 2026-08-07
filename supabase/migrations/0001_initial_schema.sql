@@ -1,5 +1,5 @@
 -- =============================================================================
--- TourBuilder — initial schema, RLS, and Storage
+-- Swift Tours — initial schema, RLS, and Storage
 -- Paste into Supabase SQL Editor (or run via supabase db push).
 -- Idempotent where reasonable; safe to re-run.
 -- =============================================================================

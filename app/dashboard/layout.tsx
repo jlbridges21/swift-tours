@@ -20,7 +20,7 @@ export default async function DashboardLayout({
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <header className="flex items-center justify-between border-b px-6 py-3">
-        <p className="font-semibold tracking-tight">TourBuilder</p>
+        <p className="font-semibold tracking-tight">Swift Tours</p>
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground">{user.email}</span>
           <SignOutButton />

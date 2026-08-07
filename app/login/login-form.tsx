@@ -38,7 +38,7 @@ export function LoginForm() {
     <Card className="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Sign in</CardTitle>
-        <CardDescription>Access your TourBuilder account</CardDescription>
+        <CardDescription>Access your Swift Tours account</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <form action={formAction} className="flex flex-col gap-4">

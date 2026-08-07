@@ -17,8 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TourBuilder",
-  description: "Build navigable virtual tours from 360° photos",
+  title: "Swift Tours",
+  description: "Create and share 360° virtual tours",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
