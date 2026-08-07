@@ -24,6 +24,12 @@ export function formatRelativeDate(isoDate: string): string {
   return rtf.format(Math.round(diffMonth / 12), "year");
 }
 
+export function formatViewCount(count: number): string {
+  if (count <= 0) return "No views yet";
+  if (count === 1) return "1 view";
+  return `${count.toLocaleString("en-US")} views`;
+}
+
 export function panoramaPublicUrl(
   path: string | null | undefined,
 ): string | null {

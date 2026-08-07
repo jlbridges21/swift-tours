@@ -188,7 +188,10 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
     .remove(paths);
 
   if (storageError) {
-    return { error: storageError.message };
+    console.error(
+      "[deleteScene] storage remove failed; proceeding with row delete",
+      { sceneId, paths, message: storageError.message },
+    );
   }
 
   const wasCover = owned.tour.cover_scene_id === sceneId;

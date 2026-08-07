@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { FullscreenToggle } from "@/components/viewer/fullscreen-toggle";
 import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
 import { SceneStrip } from "@/components/viewer/scene-strip";
 import { ShareButton } from "@/components/viewer/share-button";
 import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
+import { publicUrl } from "@/lib/storage";
 import type { Hotspot, Scene, Tour } from "@/types";
 
 export type TourViewerShellProps = {
@@ -29,6 +30,23 @@ function resolveStartSceneId(tour: Tour, scenes: Scene[]): string | undefined {
   return scenes[0]?.id;
 }
 
+function nextLikelyPanorama(
+  currentSceneId: string | null,
+  hotspots: Hotspot[],
+  scenes: Scene[],
+): string | null {
+  if (!currentSceneId) return null;
+  const firstLink = hotspots.find(
+    (h) =>
+      h.scene_id === currentSceneId &&
+      h.type === "link" &&
+      h.target_scene_id,
+  );
+  if (!firstLink?.target_scene_id) return null;
+  const target = scenes.find((s) => s.id === firstLink.target_scene_id);
+  return target ? publicUrl(target.storage_path) : null;
+}
+
 export function TourViewerShell({
   tour,
   scenes,
@@ -45,10 +63,31 @@ export function TourViewerShell({
     startSceneId ?? null,
   );
 
+  const currentScene = scenes.find((s) => s.id === currentSceneId) ?? scenes[0];
+  const preloadUrl = nextLikelyPanorama(currentSceneId, hotspots, scenes);
+
+  useEffect(() => {
+    if (!preloadUrl) return;
+    const link = document.createElement("link");
+    link.rel = "preload";
+    link.as = "image";
+    link.href = preloadUrl;
+    document.head.appendChild(link);
+    return () => {
+      link.remove();
+    };
+  }, [preloadUrl]);
+
   if (scenes.length === 0) {
     return (
-      <div className="flex h-dvh items-center justify-center bg-neutral-950 text-white">
-        <p className="text-sm text-white/70">This tour has no scenes yet.</p>
+      <div className="flex h-dvh flex-col items-center justify-center gap-2 bg-neutral-950 px-6 text-center text-white">
+        <p className="text-lg font-medium tracking-tight">
+          This tour has no scenes yet
+        </p>
+        <p className="max-w-sm text-sm text-white/65">
+          The owner still needs to upload panoramas before there&apos;s anything
+          to explore.
+        </p>
       </div>
     );
   }
@@ -72,10 +111,14 @@ export function TourViewerShell({
           mode="view"
           className="h-full w-full"
           onSceneChange={setCurrentSceneId}
+          ariaLabel={
+            currentScene
+              ? `360° panorama: ${currentScene.name}`
+              : `360° tour: ${tour.title}`
+          }
         />
       </div>
 
-      {/* Top overlay — pointer-events none on container so drag passes through */}
       <div
         className={`pointer-events-none absolute inset-x-0 z-10 bg-gradient-to-b from-black/65 via-black/25 to-transparent px-4 pb-16 pt-4 ${
           banner ? "top-10" : "top-0"

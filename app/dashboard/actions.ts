@@ -127,6 +127,37 @@ export async function deleteTour(id: string): Promise<ActionResult> {
     .eq("id", id)
     .maybeSingle();
 
+  // Collect storage paths before the row (and cascade) disappears.
+  const { data: scenes, error: scenesError } = await supabase
+    .from("scenes")
+    .select("storage_path, thumbnail_path")
+    .eq("tour_id", id);
+
+  if (scenesError) {
+    return { error: scenesError.message };
+  }
+
+  const paths: string[] = [];
+  for (const scene of scenes ?? []) {
+    if (scene.storage_path) paths.push(scene.storage_path);
+    if (scene.thumbnail_path) paths.push(scene.thumbnail_path);
+  }
+
+  const CHUNK = 100;
+  for (let i = 0; i < paths.length; i += CHUNK) {
+    const chunk = paths.slice(i, i + CHUNK);
+    const { error: storageError } = await supabase.storage
+      .from("panoramas")
+      .remove(chunk);
+
+    if (storageError) {
+      console.error(
+        "[deleteTour] storage remove failed; proceeding with row delete",
+        { tourId: id, chunk, message: storageError.message },
+      );
+    }
+  }
+
   const { error } = await supabase.from("tours").delete().eq("id", id);
 
   if (error) {
@@ -176,8 +207,17 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
   }
 
   const newTourId = created.id;
+  const copiedStoragePaths: string[] = [];
 
   const rollback = async () => {
+    if (copiedStoragePaths.length > 0) {
+      const CHUNK = 100;
+      for (let i = 0; i < copiedStoragePaths.length; i += CHUNK) {
+        await supabase.storage
+          .from("panoramas")
+          .remove(copiedStoragePaths.slice(i, i + CHUNK));
+      }
+    }
     await supabase.from("tours").delete().eq("id", newTourId);
   };
 
@@ -234,6 +274,7 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           await rollback();
           return { error: copyError.message };
         }
+        copiedStoragePaths.push(newStoragePath);
 
         let newThumbnailPath: string | null = null;
         if (scene.thumbnail_path) {
@@ -246,6 +287,7 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
             await rollback();
             return { error: thumbCopyError.message };
           }
+          copiedStoragePaths.push(newThumbnailPath);
         }
 
         const { error: updateSceneError } = await supabase

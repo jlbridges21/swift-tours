@@ -17,8 +17,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Swift Tours",
+  title: {
+    default: "Swift Tours",
+    template: "%s · Swift Tours",
+  },
   description: "Create and share 360° virtual tours",
+  applicationName: "Swift Tours",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

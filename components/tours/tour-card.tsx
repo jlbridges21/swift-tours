@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { MoreHorizontalIcon } from "lucide-react";
 import { useState, useTransition } from "react";
@@ -27,14 +28,19 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { formatRelativeDate, panoramaPublicUrl } from "@/lib/format";
+import {
+  formatRelativeDate,
+  formatViewCount,
+  panoramaPublicUrl,
+} from "@/lib/format";
 import type { TourListItem } from "@/lib/queries/tours";
 
 type TourCardProps = {
   tour: TourListItem;
+  priority?: boolean;
 };
 
-export function TourCard({ tour }: TourCardProps) {
+export function TourCard({ tour, priority = false }: TourCardProps) {
   const router = useRouter();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -78,13 +84,17 @@ export function TourCard({ tour }: TourCardProps) {
           href={`/dashboard/tours/${tour.id}/edit`}
           className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <div className="aspect-[16/10] bg-muted">
+          <div className="relative aspect-[16/10] bg-muted">
             {coverUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element -- remote storage URLs; no next/image remotePatterns yet
-              <img
+              <Image
                 src={coverUrl}
                 alt=""
-                className="size-full object-cover"
+                fill
+                className="object-cover"
+                sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                {...(priority
+                  ? { priority: true }
+                  : { loading: "lazy" as const })}
               />
             ) : (
               <div className="flex size-full items-center justify-center bg-muted text-xs text-muted-foreground">
@@ -100,6 +110,8 @@ export function TourCard({ tour }: TourCardProps) {
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{sceneLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span>{formatViewCount(tour.view_count)}</span>
               <span aria-hidden="true">·</span>
               <Badge variant={tour.is_public ? "default" : "secondary"}>
                 {tour.is_public ? "Public" : "Unlisted"}
@@ -144,7 +156,7 @@ export function TourCard({ tour }: TourCardProps) {
                 Settings
               </DropdownMenuItem>
               <DropdownMenuItem disabled={pending} onClick={handleDuplicate}>
-                Duplicate
+                {pending ? "Working…" : "Duplicate"}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

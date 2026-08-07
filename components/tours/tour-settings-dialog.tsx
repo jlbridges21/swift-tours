@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { formatViewCount } from "@/lib/format";
 import type { TourListItem } from "@/lib/queries/tours";
 
 type TourSettingsDialogProps = {
@@ -72,6 +73,9 @@ export function TourSettingsDialog({
             Update the title, description, and visibility.
           </DialogDescription>
         </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          {formatViewCount(tour.view_count)}
+        </p>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor={`title-${tour.id}`}>Title</Label>

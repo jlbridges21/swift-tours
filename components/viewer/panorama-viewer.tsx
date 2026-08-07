@@ -72,6 +72,7 @@ export type PanoramaViewerProps = {
   movingHotspotId?: string | null;
   mode: "view" | "edit";
   className?: string;
+  ariaLabel?: string;
   onSceneChange?: (sceneId: string) => void;
   onPanoramaClick?: (payload: PanoramaClickPayload) => void;
   onMarkerSelect?: (hotspotId: string) => void;
@@ -286,6 +287,7 @@ export function PanoramaViewer({
   movingHotspotId,
   mode,
   className,
+  ariaLabel,
   onSceneChange,
   onPanoramaClick,
   onMarkerSelect,
@@ -335,6 +337,9 @@ export function PanoramaViewer({
       navbar: ["zoom", "move", "fullscreen"],
       defaultYaw: startScene.initial_yaw,
       defaultPitch: startScene.initial_pitch,
+      mousewheel: true,
+      mousemove: true,
+      touchmoveTwoFingers: false,
       plugins: [
         MarkersPlugin.withConfig({
           // Marker clicks fire select-marker only — not also viewer click.
@@ -536,6 +541,8 @@ export function PanoramaViewer({
 
   return (
     <div
+      role="img"
+      aria-label={ariaLabel ?? "360° panorama viewer"}
       className={cn(
         // Parent must give this an explicit height — WebGL canvases in a
         // zero-height container render nothing. Default fills the parent.

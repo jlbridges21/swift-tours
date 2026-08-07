@@ -19,10 +19,12 @@ export default async function DashboardLayout({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center justify-between border-b px-6 py-3">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
         <p className="font-semibold tracking-tight">Swift Tours</p>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-muted-foreground">{user.email}</span>
+        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+          <span className="hidden truncate text-sm text-muted-foreground sm:inline max-w-[12rem] md:max-w-xs">
+            {user.email}
+          </span>
           <SignOutButton />
         </div>
       </header>

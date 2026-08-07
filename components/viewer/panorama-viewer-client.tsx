@@ -8,7 +8,12 @@ import { cn } from "@/lib/utils";
 import type { PanoramaViewerProps } from "./panorama-viewer";
 
 function PanoramaViewerLoading({ className }: { className?: string }) {
-  return <Skeleton className={cn("h-full min-h-[240px] w-full", className)} />;
+  return (
+    <Skeleton
+      className={cn("h-full min-h-[240px] w-full rounded-none", className)}
+      aria-label="Loading panorama"
+    />
+  );
 }
 
 /**

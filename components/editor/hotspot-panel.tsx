@@ -51,6 +51,7 @@ export function HotspotPanel({
 }: HotspotPanelProps) {
   const { run } = useSaveStatus();
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const sceneHotspots = useMemo(
     () =>
@@ -75,7 +76,9 @@ export function HotspotPanel({
       onSelect(null);
     }
 
+    setDeleting(true);
     const ok = await run(() => deleteHotspot(hotspotId));
+    setDeleting(false);
     if (!ok) {
       onHotspotsChange(previous);
       toast.error("Could not delete hotspot");
@@ -98,9 +101,13 @@ export function HotspotPanel({
             Select a scene to manage hotspots.
           </p>
         ) : sceneHotspots.length === 0 ? (
-          <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-            Click the panorama to place a hotspot.
-          </p>
+          <div className="flex flex-col gap-2 px-2 py-6 text-center">
+            <p className="text-sm font-medium">No hotspots yet</p>
+            <p className="text-sm text-muted-foreground">
+              Click the panorama to place a link (jump to another scene) or an
+              info marker visitors can tap.
+            </p>
+          </div>
         ) : (
           <ul className="flex flex-col gap-1">
             {sceneHotspots.map((hotspot) => {
@@ -193,14 +200,15 @@ export function HotspotPanel({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
+              disabled={deleting}
               onClick={() => {
                 if (deleteId) void handleDelete(deleteId);
               }}
             >
-              Delete
+              {deleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

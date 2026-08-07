@@ -65,6 +65,7 @@ export function SceneSidebar({
 }: SceneSidebarProps) {
   const { run } = useSaveStatus();
   const [deleteTarget, setDeleteTarget] = useState<Scene | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -117,7 +118,9 @@ export function SceneSidebar({
       onActiveSceneChange(fallback?.id ?? null);
     }
 
+    setDeleting(true);
     const ok = await run(() => deleteScene(scene.id));
+    setDeleting(false);
     if (!ok) {
       onScenesChange(previous);
       onActiveSceneChange(activeSceneId);
@@ -137,50 +140,78 @@ export function SceneSidebar({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {scenes.length === 0 ? (
-          <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-            Upload at least two 360° photos — hotspots need two or more scenes
-            to link between.
-          </p>
+          <div className="flex flex-col items-center gap-2 px-2 py-8 text-center">
+            <p className="text-sm font-medium">No scenes yet</p>
+            <p className="text-sm text-muted-foreground">
+              Upload a 360° equirectangular photo below to start building this
+              tour.
+            </p>
+          </div>
         ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            modifiers={[restrictToVerticalAxis]}
-            onDragEnd={(event) => {
-              void handleDragEnd(event);
-            }}
-          >
-            <SortableContext
-              items={scenes.map((scene) => scene.id)}
-              strategy={verticalListSortingStrategy}
+          <div className="flex flex-col gap-2">
+            {scenes.length === 1 ? (
+              <p className="px-2 text-xs text-muted-foreground">
+                Add a second scene to enable navigation hotspots between rooms.
+              </p>
+            ) : null}
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis]}
+              onDragEnd={(event) => {
+                void handleDragEnd(event);
+              }}
             >
-              <ul className="flex flex-col gap-1">
-                {scenes.map((scene, index) => (
-                  <SortableSceneItem
-                    key={scene.id}
-                    scene={scene}
-                    index={index}
-                    active={scene.id === activeSceneId}
-                    onSelect={() => onActiveSceneChange(scene.id)}
-                    onRename={async (name) => {
-                      const previous = scenes;
-                      onScenesChange(
-                        scenes.map((item) =>
-                          item.id === scene.id ? { ...item, name } : item,
-                        ),
-                      );
-                      const ok = await run(() => renameScene(scene.id, name));
-                      if (!ok) {
-                        onScenesChange(previous);
-                        toast.error("Could not rename scene");
-                      }
-                    }}
-                    onRequestDelete={() => setDeleteTarget(scene)}
-                  />
-                ))}
-              </ul>
-            </SortableContext>
-          </DndContext>
+              <SortableContext
+                items={scenes.map((scene) => scene.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul
+                  className="flex flex-col gap-1"
+                  role="listbox"
+                  aria-label="Tour scenes"
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+                      return;
+                    }
+                    event.preventDefault();
+                    const index = scenes.findIndex(
+                      (scene) => scene.id === activeSceneId,
+                    );
+                    const nextIndex =
+                      event.key === "ArrowDown"
+                        ? Math.min(scenes.length - 1, Math.max(0, index) + 1)
+                        : Math.max(0, (index < 0 ? 0 : index) - 1);
+                    onActiveSceneChange(scenes[nextIndex]?.id ?? null);
+                  }}
+                >
+                  {scenes.map((scene, index) => (
+                    <SortableSceneItem
+                      key={scene.id}
+                      scene={scene}
+                      index={index}
+                      active={scene.id === activeSceneId}
+                      onSelect={() => onActiveSceneChange(scene.id)}
+                      onRename={async (name) => {
+                        const previous = scenes;
+                        onScenesChange(
+                          scenes.map((item) =>
+                            item.id === scene.id ? { ...item, name } : item,
+                          ),
+                        );
+                        const ok = await run(() => renameScene(scene.id, name));
+                        if (!ok) {
+                          onScenesChange(previous);
+                          toast.error("Could not rename scene");
+                        }
+                      }}
+                      onRequestDelete={() => setDeleteTarget(scene)}
+                    />
+                  ))}
+                </ul>
+              </SortableContext>
+            </DndContext>
+          </div>
         )}
       </div>
 
@@ -209,14 +240,15 @@ export function SceneSidebar({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
+              disabled={deleting}
               onClick={() => {
                 if (deleteTarget) void handleDelete(deleteTarget);
               }}
             >
-              Delete
+              {deleting ? "Deleting…" : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -285,8 +317,10 @@ function SortableSceneItem({
 
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-start gap-2 rounded-md text-left"
+        className="flex min-w-0 flex-1 items-start gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={onSelect}
+        role="option"
+        aria-selected={active}
       >
         <div className="relative mt-0.5 size-12 shrink-0 overflow-hidden rounded-md bg-muted">
           {thumb ? (

@@ -197,7 +197,21 @@ export type Database = {
       };
     };
     Views: {
-      [_ in never]: never;
+      tour_view_counts: {
+        Row: {
+          tour_id: string;
+          view_count: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "tour_views_tour_id_fkey";
+            columns: ["tour_id"];
+            isOneToOne: true;
+            referencedRelation: "tours";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Functions: {
       [_ in never]: never;

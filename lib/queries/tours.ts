@@ -4,11 +4,13 @@ import type { Hotspot, Scene, Tour } from "@/types";
 export type TourListItem = Tour & {
   scene_count: number;
   cover_thumbnail_path: string | null;
+  view_count: number;
 };
 
 type TourQueryRow = Tour & {
   scenes: { count: number }[] | null;
   cover_scene: { thumbnail_path: string | null } | null;
+  tour_views: { count: number }[] | null;
 };
 
 export async function listTours(): Promise<TourListItem[]> {
@@ -20,7 +22,8 @@ export async function listTours(): Promise<TourListItem[]> {
       `
       *,
       scenes!scenes_tour_id_fkey(count),
-      cover_scene:scenes!fk_cover_scene(thumbnail_path)
+      cover_scene:scenes!fk_cover_scene(thumbnail_path),
+      tour_views(count)
     `,
     )
     .order("created_at", { ascending: false });
@@ -32,11 +35,12 @@ export async function listTours(): Promise<TourListItem[]> {
   const rows = (data ?? []) as TourQueryRow[];
 
   return rows.map((row) => {
-    const { scenes, cover_scene, ...tour } = row;
+    const { scenes, cover_scene, tour_views, ...tour } = row;
     return {
       ...tour,
       scene_count: scenes?.[0]?.count ?? 0,
       cover_thumbnail_path: cover_scene?.thumbnail_path ?? null,
+      view_count: tour_views?.[0]?.count ?? 0,
     };
   });
 }

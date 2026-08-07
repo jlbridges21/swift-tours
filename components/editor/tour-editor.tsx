@@ -61,7 +61,7 @@ function TourEditorInner({
   hotspots: initialHotspots,
   userId,
 }: TourEditorProps) {
-  const { run } = useSaveStatus();
+  const { run, status } = useSaveStatus();
   const viewerRef = useRef<Viewer | null>(null);
 
   const [scenes, setScenes] = useState(initialScenes);
@@ -295,7 +295,6 @@ function TourEditorInner({
 
     const previous = hotspots;
     setHotspots([...hotspots, ...created]);
-    setPlaceDraft(null);
     setSelectedHotspotId(forwardId);
 
     const okForward = await run(() =>
@@ -315,6 +314,8 @@ function TourEditorInner({
       toast.error("Could not create link hotspot");
       return;
     }
+
+    setPlaceDraft(null);
 
     if (returnHotspot) {
       const okReturn = await run(() =>
@@ -355,7 +356,6 @@ function TourEditorInner({
 
     const previous = hotspots;
     setHotspots([...hotspots, hotspot]);
-    setPlaceDraft(null);
     setSelectedHotspotId(id);
 
     const ok = await run(() =>
@@ -373,11 +373,20 @@ function TourEditorInner({
       setHotspots(previous);
       setSelectedHotspotId(null);
       toast.error("Could not create info hotspot");
+      return;
     }
+
+    setPlaceDraft(null);
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+      <div
+        className="flex border-b bg-amber-50 px-4 py-2 text-center text-xs text-amber-950 lg:hidden dark:bg-amber-950/40 dark:text-amber-100"
+        role="status"
+      >
+        Tour editing works best on a larger screen
+      </div>
       <header className="flex shrink-0 items-center gap-3 border-b px-3 py-2">
         <Button
           variant="ghost"
@@ -476,12 +485,8 @@ function TourEditorInner({
                 scenes={scenes}
                 activeSceneId={activeSceneId}
                 onCancel={() => setPlaceDraft(null)}
-                onCreateLink={(input) => {
-                  void createLinkHotspot(input);
-                }}
-                onCreateInfo={(input) => {
-                  void createInfoHotspot(input);
-                }}
+                onCreateLink={(input) => createLinkHotspot(input)}
+                onCreateInfo={(input) => createInfoHotspot(input)}
               />
             ) : null}
           </div>
@@ -501,13 +506,13 @@ function TourEditorInner({
               type="button"
               variant="outline"
               size="sm"
-              disabled={!activeScene}
+              disabled={!activeScene || status === "saving"}
               title="Save the current camera angle as where visitors look when they land on this scene"
               onClick={() => {
                 void setInitialView();
               }}
             >
-              Set as initial view
+              {status === "saving" ? "Saving…" : "Set as initial view"}
             </Button>
           </div>
         </div>

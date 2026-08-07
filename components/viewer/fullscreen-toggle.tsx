@@ -33,7 +33,7 @@ export function FullscreenToggle() {
       type="button"
       variant="secondary"
       size="sm"
-      className="bg-black/55 text-white hover:bg-black/70"
+      className="bg-black/55 text-white hover:bg-black/70 min-h-11 min-w-11 sm:min-h-8 sm:min-w-0"
       onClick={() => {
         void toggle();
       }}

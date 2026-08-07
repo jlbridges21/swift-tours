@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Allow: /tour/
+Disallow: /dashboard
+Disallow: /dashboard/
+Disallow: /api/
+Disallow: /auth/

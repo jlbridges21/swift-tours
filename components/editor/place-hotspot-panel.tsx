@@ -24,8 +24,8 @@ type PlaceHotspotPanelProps = {
     targetSceneId: string;
     label: string;
     addReturnLink: boolean;
-  }) => void;
-  onCreateInfo: (input: { label: string; content: string }) => void;
+  }) => Promise<void>;
+  onCreateInfo: (input: { label: string; content: string }) => Promise<void>;
 };
 
 type Mode = "choose" | "link" | "info";
@@ -58,6 +58,7 @@ export function PlaceHotspotPanel({
   const [label, setLabel] = useState("");
   const [content, setContent] = useState("");
   const [addReturnLink, setAddReturnLink] = useState(true);
+  const [pending, setPending] = useState(false);
   const [position, setPosition] = useState(() =>
     clampPanelPosition(draft.clientX, draft.clientY),
   );
@@ -74,6 +75,7 @@ export function PlaceHotspotPanel({
     setLabel("");
     setContent("");
     setAddReturnLink(true);
+    setPending(false);
   }, [draft]);
 
   useEffect(() => {
@@ -82,11 +84,20 @@ export function PlaceHotspotPanel({
     }
   }, [otherScenes, targetSceneId]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCancel, pending]);
+
   return (
     <div
       className="fixed z-50 w-[280px] rounded-xl bg-background p-3 text-sm shadow-lg ring-1 ring-foreground/10"
       style={{ left: position.left, top: position.top }}
       role="dialog"
+      aria-modal="true"
       aria-label="Create hotspot"
     >
       {mode === "choose" ? (
@@ -98,7 +109,7 @@ export function PlaceHotspotPanel({
             type="button"
             variant="outline"
             className="justify-start"
-            disabled={otherScenes.length === 0}
+            disabled={otherScenes.length === 0 || pending}
             title={
               otherScenes.length === 0
                 ? "Link hotspots need at least two scenes in the tour"
@@ -112,11 +123,17 @@ export function PlaceHotspotPanel({
             type="button"
             variant="outline"
             className="justify-start"
+            disabled={pending}
             onClick={() => setMode("info")}
           >
             Info hotspot
           </Button>
-          <Button type="button" variant="ghost" onClick={onCancel}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={pending}
+            onClick={onCancel}
+          >
             Cancel
           </Button>
         </div>
@@ -127,12 +144,13 @@ export function PlaceHotspotPanel({
           className="flex flex-col gap-3"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!targetSceneId) return;
-            onCreateLink({
+            if (!targetSceneId || pending) return;
+            setPending(true);
+            void onCreateLink({
               targetSceneId,
               label: label.trim(),
               addReturnLink,
-            });
+            }).finally(() => setPending(false));
           }}
         >
           <p className="text-xs font-medium text-muted-foreground">
@@ -146,6 +164,7 @@ export function PlaceHotspotPanel({
               value={targetSceneId}
               onChange={(event) => setTargetSceneId(event.target.value)}
               required
+              disabled={pending}
             >
               {otherScenes.map((scene) => (
                 <option key={scene.id} value={scene.id}>
@@ -160,6 +179,7 @@ export function PlaceHotspotPanel({
               id="link-label"
               value={label}
               onChange={(event) => setLabel(event.target.value)}
+              disabled={pending}
             />
           </div>
           <label className="flex items-start gap-2 text-xs leading-snug">
@@ -168,6 +188,7 @@ export function PlaceHotspotPanel({
               className="mt-0.5"
               checked={addReturnLink}
               onChange={(event) => setAddReturnLink(event.target.checked)}
+              disabled={pending}
             />
             Also add a return link from the target scene
           </label>
@@ -176,12 +197,13 @@ export function PlaceHotspotPanel({
               type="button"
               variant="ghost"
               className="flex-1"
+              disabled={pending}
               onClick={() => setMode("choose")}
             >
               Back
             </Button>
-            <Button type="submit" className="flex-1">
-              Create
+            <Button type="submit" className="flex-1" disabled={pending}>
+              {pending ? "Creating…" : "Create"}
             </Button>
           </div>
         </form>
@@ -192,10 +214,12 @@ export function PlaceHotspotPanel({
           className="flex flex-col gap-3"
           onSubmit={(event) => {
             event.preventDefault();
-            onCreateInfo({
+            if (pending) return;
+            setPending(true);
+            void onCreateInfo({
               label: label.trim(),
               content: content.trim(),
-            });
+            }).finally(() => setPending(false));
           }}
         >
           <p className="text-xs font-medium text-muted-foreground">
@@ -207,6 +231,7 @@ export function PlaceHotspotPanel({
               id="info-label"
               value={label}
               onChange={(event) => setLabel(event.target.value)}
+              disabled={pending}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -216,6 +241,7 @@ export function PlaceHotspotPanel({
               rows={3}
               value={content}
               onChange={(event) => setContent(event.target.value)}
+              disabled={pending}
             />
           </div>
           <div className="flex gap-2">
@@ -223,12 +249,13 @@ export function PlaceHotspotPanel({
               type="button"
               variant="ghost"
               className="flex-1"
+              disabled={pending}
               onClick={() => setMode("choose")}
             >
               Back
             </Button>
-            <Button type="submit" className="flex-1">
-              Create
+            <Button type="submit" className="flex-1" disabled={pending}>
+              {pending ? "Creating…" : "Create"}
             </Button>
           </div>
         </form>
