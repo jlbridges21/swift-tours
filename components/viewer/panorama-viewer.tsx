@@ -3,12 +3,14 @@
 /**
  * Coordinates are RADIANS end-to-end.
  * Photo Sphere Viewer uses radians internally; the hotspots / scenes tables store
- * yaw & pitch as double precision radians. Do not convert to degrees — the hotspot
- * editor depends on this being consistent.
+ * yaw & pitch as double precision radians. Do not convert to degrees.
  */
 
 import { Viewer, events } from "@photo-sphere-viewer/core";
-import { MarkersPlugin } from "@photo-sphere-viewer/markers-plugin";
+import {
+  MarkersPlugin,
+  type MarkerConfig,
+} from "@photo-sphere-viewer/markers-plugin";
 import {
   VirtualTourPlugin,
   type VirtualTourLink,
@@ -52,16 +54,25 @@ export type PanoramaViewerHotspot = Pick<
   | "content"
 >;
 
+export type PanoramaClickPayload = {
+  yaw: number;
+  pitch: number;
+  clientX: number;
+  clientY: number;
+  markerId?: string;
+};
+
 export type PanoramaViewerProps = {
   scenes: PanoramaViewerScene[];
   hotspots: PanoramaViewerHotspot[];
   startSceneId?: string;
-  /** Controlled active node — updates via setCurrentNode without rebuilding the viewer. */
   currentSceneId?: string;
+  selectedHotspotId?: string | null;
   mode: "view" | "edit";
   className?: string;
   onSceneChange?: (sceneId: string) => void;
-  onPanoramaClick?: (yaw: number, pitch: number) => void;
+  onPanoramaClick?: (payload: PanoramaClickPayload) => void;
+  onMarkerSelect?: (hotspotId: string) => void;
   onViewerReady?: (viewer: Viewer) => void;
 };
 
@@ -70,7 +81,34 @@ type InfoOverlay = {
   content: string | null;
 };
 
-const INFO_MARKER_HTML = `<div style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:rgba(15,15,15,0.85);color:#fff;font-size:13px;font-weight:600;font-family:system-ui,sans-serif;border:2px solid rgba(255,255,255,0.9);cursor:pointer;">i</div>`;
+function markerHtml(type: "link" | "info", selected: boolean): string {
+  const border = selected ? "#3b82f6" : "rgba(255,255,255,0.95)";
+  const bg =
+    type === "link" ? "rgba(37,99,235,0.92)" : "rgba(15,15,15,0.88)";
+  const icon = type === "link" ? "→" : "i";
+  return `<div style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:${bg};color:#fff;font-size:13px;font-weight:700;font-family:system-ui,sans-serif;border:2px solid ${border};box-shadow:${selected ? "0 0 0 3px rgba(59,130,246,0.45)" : "none"};cursor:pointer;user-select:none;">${icon}</div>`;
+}
+
+export function hotspotToMarkerConfig(
+  hotspot: PanoramaViewerHotspot,
+  selected: boolean,
+): MarkerConfig {
+  const type = hotspot.type === "link" ? "link" : "info";
+  return {
+    id: hotspot.id,
+    position: { yaw: hotspot.yaw, pitch: hotspot.pitch },
+    html: markerHtml(type, selected),
+    size: { width: 28, height: 28 },
+    anchor: "center center",
+    tooltip: hotspot.label ?? (type === "link" ? "Link" : "Info"),
+    data: {
+      hotspotId: hotspot.id,
+      type,
+      label: hotspot.label,
+      content: hotspot.content,
+    },
+  };
+}
 
 function resolveStartId(
   scenes: PanoramaViewerScene[],
@@ -85,6 +123,7 @@ function resolveStartId(
 function buildNodes(
   scenes: PanoramaViewerScene[],
   hotspots: PanoramaViewerHotspot[],
+  mode: "view" | "edit",
 ): VirtualTourNode[] {
   const sceneIds = new Set(scenes.map((scene) => scene.id));
 
@@ -92,6 +131,21 @@ function buildNodes(
     const sceneHotspots = hotspots.filter(
       (hotspot) => hotspot.scene_id === scene.id,
     );
+
+    // Edit mode: no VirtualTour links (they'd navigate on click). Markers are
+    // managed separately via MarkersPlugin add/update/remove.
+    if (mode === "edit") {
+      return {
+        id: scene.id,
+        name: scene.name,
+        panorama: publicUrl(scene.storage_path),
+        thumbnail: scene.thumbnail_path
+          ? publicUrl(scene.thumbnail_path)
+          : undefined,
+        links: [],
+        markers: [],
+      };
+    }
 
     const links: VirtualTourLink[] = sceneHotspots
       .filter(
@@ -102,7 +156,6 @@ function buildNodes(
       )
       .map((hotspot) => ({
         nodeId: hotspot.target_scene_id as string,
-        // Manual mode — yaw/pitch in radians (not latitude/longitude).
         position: {
           yaw: hotspot.yaw,
           pitch: hotspot.pitch,
@@ -112,22 +165,7 @@ function buildNodes(
 
     const markers = sceneHotspots
       .filter((hotspot) => hotspot.type === "info")
-      .map((hotspot) => ({
-        id: hotspot.id,
-        position: {
-          yaw: hotspot.yaw,
-          pitch: hotspot.pitch,
-        },
-        html: INFO_MARKER_HTML,
-        size: { width: 28, height: 28 },
-        anchor: "center center",
-        tooltip: hotspot.label ?? "Info",
-        data: {
-          kind: "info" as const,
-          label: hotspot.label,
-          content: hotspot.content,
-        },
-      }));
+      .map((hotspot) => hotspotToMarkerConfig(hotspot, false));
 
     return {
       id: scene.id,
@@ -142,7 +180,21 @@ function buildNodes(
   });
 }
 
-function serializeNodesKey(nodes: VirtualTourNode[]): string {
+function serializeNodesKey(
+  nodes: VirtualTourNode[],
+  mode: "view" | "edit",
+): string {
+  if (mode === "edit") {
+    return JSON.stringify(
+      nodes.map((node) => ({
+        id: node.id,
+        panorama: node.panorama,
+        thumbnail: node.thumbnail,
+        name: node.name,
+      })),
+    );
+  }
+
   return JSON.stringify(
     nodes.map((node) => ({
       id: node.id,
@@ -164,29 +216,62 @@ function serializeNodesKey(nodes: VirtualTourNode[]): string {
   );
 }
 
+function syncEditMarkers(
+  markers: MarkersPlugin,
+  sceneHotspots: PanoramaViewerHotspot[],
+  selectedHotspotId: string | null | undefined,
+) {
+  const existingIds = new Set(markers.getMarkers().map((marker) => marker.id));
+  const nextIds = new Set(sceneHotspots.map((hotspot) => hotspot.id));
+
+  for (const hotspot of sceneHotspots) {
+    const config = hotspotToMarkerConfig(
+      hotspot,
+      hotspot.id === selectedHotspotId,
+    );
+    if (existingIds.has(hotspot.id)) {
+      markers.updateMarker(config);
+    } else {
+      markers.addMarker(config);
+    }
+  }
+
+  for (const id of existingIds) {
+    if (!nextIds.has(id)) {
+      markers.removeMarker(id);
+    }
+  }
+}
+
 export function PanoramaViewer({
   scenes,
   hotspots,
   startSceneId,
   currentSceneId,
+  selectedHotspotId,
   mode,
   className,
   onSceneChange,
   onPanoramaClick,
+  onMarkerSelect,
   onViewerReady,
 }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const nodesKeyRef = useRef<string>("");
+  const modeRef = useRef(mode);
   const onSceneChangeRef = useRef(onSceneChange);
   const onPanoramaClickRef = useRef(onPanoramaClick);
+  const onMarkerSelectRef = useRef(onMarkerSelect);
   const onViewerReadyRef = useRef(onViewerReady);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [infoOverlay, setInfoOverlay] = useState<InfoOverlay | null>(null);
 
+  modeRef.current = mode;
   onSceneChangeRef.current = onSceneChange;
   onPanoramaClickRef.current = onPanoramaClick;
+  onMarkerSelectRef.current = onMarkerSelect;
   onViewerReadyRef.current = onViewerReady;
 
   const hasScenes = scenes.length > 0;
@@ -198,8 +283,6 @@ export function PanoramaViewer({
     return scenes.find((scene) => scene.id === id) ?? scenes[0];
   }, [hasScenes, scenes, startSceneId, currentSceneId]);
 
-  // Instantiate once per "has scenes" lifetime. StrictMode double-mount is
-  // handled by the cleanup calling viewer.destroy().
   useEffect(() => {
     if (!hasScenes || !containerRef.current || !startScene) {
       return;
@@ -208,7 +291,7 @@ export function PanoramaViewer({
     setLoadError(null);
     setInfoOverlay(null);
 
-    const nodes = buildNodes(scenes, hotspots);
+    const nodes = buildNodes(scenes, hotspots, mode);
     const startId = resolveStartId(scenes, currentSceneId ?? startSceneId);
 
     const viewer = new Viewer({
@@ -217,7 +300,10 @@ export function PanoramaViewer({
       defaultYaw: startScene.initial_yaw,
       defaultPitch: startScene.initial_pitch,
       plugins: [
-        MarkersPlugin.withConfig({}),
+        MarkersPlugin.withConfig({
+          // Marker clicks fire select-marker only — not also viewer click.
+          clickEventOnMarker: false,
+        }),
         VirtualTourPlugin.withConfig({
           dataMode: "client",
           positionMode: "manual",
@@ -228,17 +314,25 @@ export function PanoramaViewer({
     });
 
     viewerRef.current = viewer;
-    nodesKeyRef.current = serializeNodesKey(nodes);
+    nodesKeyRef.current = serializeNodesKey(nodes, mode);
     onViewerReadyRef.current?.(viewer);
 
     const tour = viewer.getPlugin<VirtualTourPlugin>(VirtualTourPlugin);
-    const markers = viewer.getPlugin<MarkersPlugin>(MarkersPlugin);
+    const markersPlugin = viewer.getPlugin<MarkersPlugin>(MarkersPlugin);
 
-    if (!tour || !markers) {
+    if (!tour || !markersPlugin) {
       viewer.destroy();
       viewerRef.current = null;
       setLoadError("Failed to initialize tour plugins.");
       return;
+    }
+
+    if (mode === "edit" && currentSceneId) {
+      syncEditMarkers(
+        markersPlugin,
+        hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
+        selectedHotspotId,
+      );
     }
 
     const handleNodeChanged = (event: { node: { id: string } }) => {
@@ -256,26 +350,34 @@ export function PanoramaViewer({
 
     const handleSelectMarker = (event: {
       marker: {
+        id: string;
         data?: {
-          kind?: string;
+          type?: string;
           label?: string | null;
           content?: string | null;
         };
       };
     }) => {
-      const data = event.marker.data;
-      if (data?.kind !== "info") return;
-      setInfoOverlay({
-        label: data.label ?? null,
-        content: data.content ?? null,
-      });
+      if (modeRef.current === "edit") {
+        onMarkerSelectRef.current?.(event.marker.id);
+        return;
+      }
+
+      if (event.marker.data?.type === "info") {
+        setInfoOverlay({
+          label: event.marker.data.label ?? null,
+          content: event.marker.data.content ?? null,
+        });
+      }
     };
-    markers.addEventListener("select-marker", handleSelectMarker);
+    markersPlugin.addEventListener("select-marker", handleSelectMarker);
 
     const handleUnselectMarker = () => {
-      setInfoOverlay(null);
+      if (modeRef.current !== "edit") {
+        setInfoOverlay(null);
+      }
     };
-    markers.addEventListener("unselect-marker", handleUnselectMarker);
+    markersPlugin.addEventListener("unselect-marker", handleUnselectMarker);
 
     return () => {
       viewer.destroy();
@@ -286,13 +388,13 @@ export function PanoramaViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasScenes]);
 
-  // Update nodes/links on prop changes without recreating the Viewer.
+  // Update tour nodes when scenes (or view-mode hotspot graph) change.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !hasScenes) return;
 
-    const nodes = buildNodes(scenes, hotspots);
-    const key = serializeNodesKey(nodes);
+    const nodes = buildNodes(scenes, hotspots, mode);
+    const key = serializeNodesKey(nodes, mode);
     if (key === nodesKeyRef.current) return;
     nodesKeyRef.current = key;
 
@@ -306,10 +408,9 @@ export function PanoramaViewer({
         : resolveStartId(scenes, startSceneId);
 
     tour.setNodes(nodes, nextStart);
-  }, [scenes, hotspots, startSceneId, hasScenes]);
+  }, [scenes, hotspots, startSceneId, hasScenes, mode]);
 
-  // Controlled scene selection from the parent (sidebar). Bail if already current
-  // so onSceneChange → setState → setCurrentNode cannot loop.
+  // Controlled scene selection.
   useEffect(() => {
     if (!currentSceneId || !hasScenes) return;
 
@@ -325,14 +426,43 @@ export function PanoramaViewer({
     void tour.setCurrentNode(currentSceneId);
   }, [currentSceneId, hasScenes]);
 
-  // Edit-mode panorama click → yaw/pitch in radians.
+  // Edit mode: keep MarkersPlugin in sync without clearing the whole set.
+  useEffect(() => {
+    if (mode !== "edit" || !hasScenes || !currentSceneId) return;
+
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const markersPlugin = viewer.getPlugin<MarkersPlugin>(MarkersPlugin);
+    if (!markersPlugin) return;
+
+    syncEditMarkers(
+      markersPlugin,
+      hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
+      selectedHotspotId,
+    );
+  }, [mode, hasScenes, currentSceneId, hotspots, selectedHotspotId]);
+
+  // Edit-mode panorama click (empty space only — markers use select-marker).
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !hasScenes || mode !== "edit") return;
 
     const handleClick = (event: events.ClickEvent) => {
       if (event.data.rightclick) return;
-      onPanoramaClickRef.current?.(event.data.yaw, event.data.pitch);
+
+      const markerId =
+        event.data.marker && typeof event.data.marker === "object"
+          ? ((event.data.marker as { id?: string }).id ?? undefined)
+          : undefined;
+
+      onPanoramaClickRef.current?.({
+        yaw: event.data.yaw,
+        pitch: event.data.pitch,
+        clientX: event.data.clientX,
+        clientY: event.data.clientY,
+        markerId,
+      });
     };
 
     viewer.addEventListener(events.ClickEvent.type, handleClick);
@@ -371,7 +501,7 @@ export function PanoramaViewer({
         </div>
       ) : null}
 
-      {infoOverlay ? (
+      {mode === "view" && infoOverlay ? (
         <div className="absolute bottom-4 left-4 z-10 max-w-sm rounded-lg bg-background/95 p-3 text-sm shadow-md ring-1 ring-foreground/10">
           {infoOverlay.label ? (
             <p className="font-medium">{infoOverlay.label}</p>

@@ -1,14 +1,22 @@
 "use client";
 
 import type { Viewer } from "@photo-sphere-viewer/core";
+import { MarkersPlugin } from "@photo-sphere-viewer/markers-plugin";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
+  createHotspot,
+  updateHotspot,
   updateSceneInitialView,
   updateTourTitle,
 } from "@/app/dashboard/tours/[id]/actions";
+import { HotspotPanel } from "@/components/editor/hotspot-panel";
+import {
+  PlaceHotspotPanel,
+  type PlaceHotspotDraft,
+} from "@/components/editor/place-hotspot-panel";
 import { SceneSidebar } from "@/components/editor/scene-sidebar";
 import {
   SaveStatusIndicator,
@@ -17,7 +25,10 @@ import {
 } from "@/components/editor/save-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
+import {
+  PanoramaViewer,
+  type PanoramaClickPayload,
+} from "@/components/viewer/panorama-viewer-client";
 import type { Hotspot, Scene, Tour } from "@/types";
 
 type TourEditorProps = {
@@ -26,6 +37,15 @@ type TourEditorProps = {
   hotspots: Hotspot[];
   userId: string;
 };
+
+function normalizeYaw(yaw: number): number {
+  const twoPi = Math.PI * 2;
+  return ((yaw % twoPi) + twoPi) % twoPi;
+}
+
+function reciprocalYaw(yaw: number): number {
+  return normalizeYaw(yaw + Math.PI);
+}
 
 export function TourEditor(props: TourEditorProps) {
   return (
@@ -38,21 +58,30 @@ export function TourEditor(props: TourEditorProps) {
 function TourEditorInner({
   tour,
   scenes: initialScenes,
-  hotspots,
+  hotspots: initialHotspots,
   userId,
 }: TourEditorProps) {
   const { run } = useSaveStatus();
   const viewerRef = useRef<Viewer | null>(null);
 
   const [scenes, setScenes] = useState(initialScenes);
+  const [hotspots, setHotspots] = useState(initialHotspots);
   const [title, setTitle] = useState(tour.title);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(
     initialScenes[0]?.id ?? null,
   );
+  const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(
+    null,
+  );
+  const [placeDraft, setPlaceDraft] = useState<PlaceHotspotDraft | null>(null);
 
   useEffect(() => {
     setScenes(initialScenes);
   }, [initialScenes]);
+
+  useEffect(() => {
+    setHotspots(initialHotspots);
+  }, [initialHotspots]);
 
   useEffect(() => {
     setTitle(tour.title);
@@ -68,10 +97,27 @@ function TourEditorInner({
     }
   }, [scenes, activeSceneId]);
 
+  useEffect(() => {
+    setSelectedHotspotId(null);
+    setPlaceDraft(null);
+  }, [activeSceneId]);
+
   const activeScene = useMemo(
     () => scenes.find((scene) => scene.id === activeSceneId) ?? null,
     [scenes, activeSceneId],
   );
+
+  function pruneHotspotsForScenes(nextScenes: Scene[]) {
+    const ids = new Set(nextScenes.map((scene) => scene.id));
+    setHotspots((prev) =>
+      prev.filter(
+        (hotspot) =>
+          ids.has(hotspot.scene_id) &&
+          (hotspot.target_scene_id === null ||
+            ids.has(hotspot.target_scene_id)),
+      ),
+    );
+  }
 
   async function saveTitle() {
     const trimmed = title.trim();
@@ -111,6 +157,196 @@ function TourEditorInner({
       ),
     );
     toast.success("Initial view saved");
+  }
+
+  function faceHotspot(hotspot: Hotspot) {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const markers = viewer.getPlugin<MarkersPlugin>(MarkersPlugin);
+    if (markers) {
+      try {
+        void markers.gotoMarker(hotspot.id, "8rpm");
+        return;
+      } catch {
+        // Marker may not exist yet; fall through to animate.
+      }
+    }
+
+    viewer.animate({
+      yaw: hotspot.yaw,
+      pitch: hotspot.pitch,
+      speed: "8rpm",
+    });
+  }
+
+  function handlePanoramaClick(payload: PanoramaClickPayload) {
+    if (!activeSceneId) return;
+
+    // Marker clicks are handled via onMarkerSelect (clickEventOnMarker: false).
+    if (payload.markerId) {
+      setSelectedHotspotId(payload.markerId);
+      setPlaceDraft(null);
+      return;
+    }
+
+    // Click-to-move fallback (MarkersPlugin 5.15.1 has no draggable markers).
+    if (selectedHotspotId) {
+      const selected = hotspots.find(
+        (hotspot) => hotspot.id === selectedHotspotId,
+      );
+      if (selected && selected.scene_id === activeSceneId) {
+        void moveSelectedHotspot(selected, payload.yaw, payload.pitch);
+        setPlaceDraft(null);
+        return;
+      }
+    }
+
+    setPlaceDraft({
+      yaw: payload.yaw,
+      pitch: payload.pitch,
+      clientX: payload.clientX,
+      clientY: payload.clientY,
+    });
+  }
+
+  async function moveSelectedHotspot(
+    hotspot: Hotspot,
+    yaw: number,
+    pitch: number,
+  ) {
+    const previous = hotspots;
+    const next = hotspots.map((item) =>
+      item.id === hotspot.id ? { ...item, yaw, pitch } : item,
+    );
+    setHotspots(next);
+
+    const ok = await run(() => updateHotspot(hotspot.id, { yaw, pitch }));
+    if (!ok) {
+      setHotspots(previous);
+      toast.error("Could not move hotspot");
+    }
+  }
+
+  async function createLinkHotspot(input: {
+    targetSceneId: string;
+    label: string;
+    addReturnLink: boolean;
+  }) {
+    if (!activeSceneId || !placeDraft) return;
+
+    const forwardId = crypto.randomUUID();
+    const forward: Hotspot = {
+      id: forwardId,
+      scene_id: activeSceneId,
+      target_scene_id: input.targetSceneId,
+      type: "link",
+      yaw: placeDraft.yaw,
+      pitch: placeDraft.pitch,
+      label: input.label || null,
+      content: null,
+      created_at: new Date().toISOString(),
+    };
+
+    const created: Hotspot[] = [forward];
+    let returnHotspot: Hotspot | null = null;
+
+    if (input.addReturnLink) {
+      returnHotspot = {
+        id: crypto.randomUUID(),
+        scene_id: input.targetSceneId,
+        target_scene_id: activeSceneId,
+        type: "link",
+        yaw: reciprocalYaw(placeDraft.yaw),
+        pitch: 0,
+        label: input.label || null,
+        content: null,
+        created_at: new Date().toISOString(),
+      };
+      created.push(returnHotspot);
+    }
+
+    const previous = hotspots;
+    setHotspots([...hotspots, ...created]);
+    setPlaceDraft(null);
+    setSelectedHotspotId(forwardId);
+
+    const okForward = await run(() =>
+      createHotspot(activeSceneId, {
+        id: forward.id,
+        type: "link",
+        targetSceneId: forward.target_scene_id,
+        yaw: forward.yaw,
+        pitch: forward.pitch,
+        label: forward.label,
+      }),
+    );
+
+    if (!okForward) {
+      setHotspots(previous);
+      setSelectedHotspotId(null);
+      toast.error("Could not create link hotspot");
+      return;
+    }
+
+    if (returnHotspot) {
+      const okReturn = await run(() =>
+        createHotspot(returnHotspot!.scene_id, {
+          id: returnHotspot!.id,
+          type: "link",
+          targetSceneId: returnHotspot!.target_scene_id,
+          yaw: returnHotspot!.yaw,
+          pitch: returnHotspot!.pitch,
+          label: returnHotspot!.label,
+        }),
+      );
+
+      if (!okReturn) {
+        setHotspots((prev) =>
+          prev.filter((hotspot) => hotspot.id !== returnHotspot!.id),
+        );
+        toast.error("Created link, but return link failed");
+      }
+    }
+  }
+
+  async function createInfoHotspot(input: { label: string; content: string }) {
+    if (!activeSceneId || !placeDraft) return;
+
+    const id = crypto.randomUUID();
+    const hotspot: Hotspot = {
+      id,
+      scene_id: activeSceneId,
+      target_scene_id: null,
+      type: "info",
+      yaw: placeDraft.yaw,
+      pitch: placeDraft.pitch,
+      label: input.label || null,
+      content: input.content || null,
+      created_at: new Date().toISOString(),
+    };
+
+    const previous = hotspots;
+    setHotspots([...hotspots, hotspot]);
+    setPlaceDraft(null);
+    setSelectedHotspotId(id);
+
+    const ok = await run(() =>
+      createHotspot(activeSceneId, {
+        id,
+        type: "info",
+        yaw: hotspot.yaw,
+        pitch: hotspot.pitch,
+        label: hotspot.label,
+        content: hotspot.content,
+      }),
+    );
+
+    if (!ok) {
+      setHotspots(previous);
+      setSelectedHotspotId(null);
+      toast.error("Could not create info hotspot");
+    }
   }
 
   return (
@@ -163,25 +399,46 @@ function TourEditorInner({
             userId={userId}
             scenes={scenes}
             activeSceneId={activeSceneId}
-            onScenesChange={setScenes}
+            onScenesChange={(next) => {
+              setScenes(next);
+              pruneHotspotsForScenes(next);
+            }}
             onActiveSceneChange={setActiveSceneId}
           />
         </div>
 
         <div className="order-1 flex min-h-0 min-w-0 flex-1 flex-col lg:order-2">
-          <div className="min-h-[40vh] flex-1 lg:min-h-0">
+          <div className="relative min-h-[40vh] flex-1 lg:min-h-0">
             <PanoramaViewer
               scenes={scenes}
               hotspots={hotspots}
               currentSceneId={activeSceneId ?? undefined}
+              selectedHotspotId={selectedHotspotId}
               startSceneId={tour.cover_scene_id ?? undefined}
               mode="edit"
               className="rounded-none"
               onSceneChange={setActiveSceneId}
+              onMarkerSelect={setSelectedHotspotId}
+              onPanoramaClick={handlePanoramaClick}
               onViewerReady={(viewer) => {
                 viewerRef.current = viewer;
               }}
             />
+
+            {placeDraft && activeSceneId ? (
+              <PlaceHotspotPanel
+                draft={placeDraft}
+                scenes={scenes}
+                activeSceneId={activeSceneId}
+                onCancel={() => setPlaceDraft(null)}
+                onCreateLink={(input) => {
+                  void createLinkHotspot(input);
+                }}
+                onCreateInfo={(input) => {
+                  void createInfoHotspot(input);
+                }}
+              />
+            ) : null}
           </div>
 
           <div className="flex shrink-0 items-center gap-3 border-t px-3 py-2">
@@ -210,14 +467,17 @@ function TourEditorInner({
           </div>
         </div>
 
-        <aside className="order-3 hidden h-full w-[300px] shrink-0 flex-col border-l bg-background lg:flex">
-          <div className="border-b px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Hotspots
-          </div>
-          <div className="flex flex-1 items-center justify-center p-4 text-center text-sm text-muted-foreground">
-            Hotspots
-          </div>
-        </aside>
+        <div className="order-3 hidden lg:flex">
+          <HotspotPanel
+            scenes={scenes}
+            hotspots={hotspots}
+            activeSceneId={activeSceneId}
+            selectedHotspotId={selectedHotspotId}
+            onSelect={setSelectedHotspotId}
+            onHotspotsChange={setHotspots}
+            onFaceHotspot={faceHotspot}
+          />
+        </div>
       </div>
     </div>
   );

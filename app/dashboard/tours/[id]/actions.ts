@@ -340,3 +340,223 @@ export async function updateTourTitle(
   revalidatePath("/dashboard");
   return {};
 }
+
+async function requireOwnedScene(sceneId: string) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return {
+      error: "You must be signed in." as const,
+      supabase,
+      user: null,
+      scene: null,
+      tour: null,
+    };
+  }
+
+  const { data: scene, error } = await supabase
+    .from("scenes")
+    .select("id, tour_id")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (error) {
+    return {
+      error: error.message,
+      supabase,
+      user: null,
+      scene: null,
+      tour: null,
+    };
+  }
+
+  if (!scene) {
+    return {
+      error: "Scene not found.",
+      supabase,
+      user: null,
+      scene: null,
+      tour: null,
+    };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error || !owned.tour) {
+    return {
+      error: owned.error ?? "Unauthorized.",
+      supabase,
+      user: null,
+      scene: null,
+      tour: null,
+    };
+  }
+
+  return { error: null, supabase, user, scene, tour: owned.tour };
+}
+
+async function requireOwnedHotspot(hotspotId: string) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return {
+      error: "You must be signed in." as const,
+      supabase,
+      hotspot: null,
+      scene: null,
+    };
+  }
+
+  const { data: hotspot, error } = await supabase
+    .from("hotspots")
+    .select("id, scene_id")
+    .eq("id", hotspotId)
+    .maybeSingle();
+
+  if (error) {
+    return { error: error.message, supabase, hotspot: null, scene: null };
+  }
+
+  if (!hotspot) {
+    return {
+      error: "Hotspot not found.",
+      supabase,
+      hotspot: null,
+      scene: null,
+    };
+  }
+
+  const owned = await requireOwnedScene(hotspot.scene_id);
+  if (owned.error || !owned.scene) {
+    return {
+      error: owned.error ?? "Unauthorized.",
+      supabase,
+      hotspot: null,
+      scene: null,
+    };
+  }
+
+  return { error: null, supabase, hotspot, scene: owned.scene };
+}
+
+export async function createHotspot(
+  sceneId: string,
+  input: {
+    id: string;
+    type: "link" | "info";
+    targetSceneId?: string | null;
+    yaw: number;
+    pitch: number;
+    label?: string | null;
+    content?: string | null;
+  },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedScene(sceneId);
+  if (owned.error || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  if (input.type === "link") {
+    if (!input.targetSceneId) {
+      return { error: "A link hotspot needs a target scene." };
+    }
+    if (input.targetSceneId === sceneId) {
+      return { error: "A link cannot target its own scene." };
+    }
+  }
+
+  const { error } = await owned.supabase.from("hotspots").insert({
+    id: input.id,
+    scene_id: sceneId,
+    type: input.type,
+    target_scene_id: input.type === "link" ? input.targetSceneId : null,
+    yaw: input.yaw,
+    pitch: input.pitch,
+    label: input.label ?? null,
+    content: input.type === "info" ? (input.content ?? null) : null,
+  });
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath(editorPath(owned.scene.tour_id));
+  return {};
+}
+
+export async function updateHotspot(
+  hotspotId: string,
+  patch: {
+    type?: "link" | "info";
+    targetSceneId?: string | null;
+    yaw?: number;
+    pitch?: number;
+    label?: string | null;
+    content?: string | null;
+  },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedHotspot(hotspotId);
+  if (owned.error || !owned.hotspot || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const update: {
+    type?: string;
+    target_scene_id?: string | null;
+    yaw?: number;
+    pitch?: number;
+    label?: string | null;
+    content?: string | null;
+  } = {};
+
+  if (patch.type !== undefined) update.type = patch.type;
+  if (patch.targetSceneId !== undefined) {
+    update.target_scene_id = patch.targetSceneId;
+  }
+  if (patch.yaw !== undefined) update.yaw = patch.yaw;
+  if (patch.pitch !== undefined) update.pitch = patch.pitch;
+  if (patch.label !== undefined) update.label = patch.label;
+  if (patch.content !== undefined) update.content = patch.content;
+
+  if (update.type === "info") {
+    update.target_scene_id = null;
+  }
+
+  const { error } = await owned.supabase
+    .from("hotspots")
+    .update(update)
+    .eq("id", hotspotId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath(editorPath(owned.scene.tour_id));
+  return {};
+}
+
+export async function deleteHotspot(
+  hotspotId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedHotspot(hotspotId);
+  if (owned.error || !owned.hotspot || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { error } = await owned.supabase
+    .from("hotspots")
+    .delete()
+    .eq("id", hotspotId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath(editorPath(owned.scene.tour_id));
+  return {};
+}

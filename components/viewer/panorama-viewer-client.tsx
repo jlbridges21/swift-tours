@@ -27,4 +27,9 @@ export const PanoramaViewer = dynamic(
   },
 );
 
-export type { PanoramaViewerHotspot, PanoramaViewerProps, PanoramaViewerScene } from "./panorama-viewer";
+export type {
+  PanoramaClickPayload,
+  PanoramaViewerHotspot,
+  PanoramaViewerProps,
+  PanoramaViewerScene,
+} from "./panorama-viewer";
