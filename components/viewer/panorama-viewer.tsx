@@ -35,6 +35,8 @@ import {
 import { cn } from "@/lib/utils";
 import type { Hotspot, Scene } from "@/types";
 
+import { InfoHotspotPopover } from "@/components/viewer/info-hotspot-popover";
+
 import "@photo-sphere-viewer/core/index.css";
 import "@photo-sphere-viewer/markers-plugin/index.css";
 import "@photo-sphere-viewer/virtual-tour-plugin/index.css";
@@ -92,6 +94,9 @@ export type PanoramaViewerProps = {
 };
 
 type InfoOverlay = {
+  id: string;
+  yaw: number;
+  pitch: number;
   label: string | null;
   content: string | null;
 };
@@ -151,6 +156,8 @@ export function hotspotToMarkerConfig(
       label: hotspot.label,
       content: hotspot.content,
       targetSceneId: hotspot.target_scene_id,
+      yaw: hotspot.yaw,
+      pitch: hotspot.pitch,
     },
   };
 }
@@ -453,35 +460,49 @@ export function PanoramaViewer({
           label?: string | null;
           content?: string | null;
           targetSceneId?: string | null;
+          yaw?: number;
+          pitch?: number;
         };
       };
     }) => {
       if (modeRef.current === "edit") {
         onMarkerSelectRef.current?.(event.marker.id);
-        return;
       }
 
       if (
         event.marker.data?.type === "link" &&
         event.marker.data.targetSceneId
       ) {
-        void tour.setCurrentNode(event.marker.data.targetSceneId);
+        setInfoOverlay(null);
+        if (modeRef.current === "view") {
+          void tour.setCurrentNode(event.marker.data.targetSceneId);
+        }
         return;
       }
 
       if (event.marker.data?.type === "info") {
+        const yaw = event.marker.data.yaw;
+        const pitch = event.marker.data.pitch;
+        if (typeof yaw !== "number" || typeof pitch !== "number") {
+          setInfoOverlay(null);
+          return;
+        }
         setInfoOverlay({
+          id: event.marker.id,
+          yaw,
+          pitch,
           label: event.marker.data.label ?? null,
           content: event.marker.data.content ?? null,
         });
+        return;
       }
+
+      setInfoOverlay(null);
     };
     markersPlugin.addEventListener("select-marker", handleSelectMarker);
 
     const handleUnselectMarker = () => {
-      if (modeRef.current !== "edit") {
-        setInfoOverlay(null);
-      }
+      setInfoOverlay(null);
     };
     markersPlugin.addEventListener("unselect-marker", handleUnselectMarker);
 
@@ -613,6 +634,10 @@ export function PanoramaViewer({
           ? ((event.data.marker as { id?: string }).id ?? undefined)
           : undefined;
 
+      if (!markerId) {
+        setInfoOverlay(null);
+      }
+
       onPanoramaClickRef.current?.({
         yaw: event.data.yaw,
         pitch: event.data.pitch,
@@ -626,12 +651,63 @@ export function PanoramaViewer({
     return () => {
       viewer.removeEventListener(events.ClickEvent.type, handleClick);
     };
-  }, [mode, hasScenes]);
+  }, [mode, hasScenes, retryNonce]);
+
+  // View mode: close info popover when clicking empty panorama.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !hasScenes || mode !== "view" || !infoOverlay) return;
+
+    const handleClick = (event: events.ClickEvent) => {
+      if (event.data.rightclick) return;
+      const markerId =
+        event.data.marker && typeof event.data.marker === "object"
+          ? ((event.data.marker as { id?: string }).id ?? undefined)
+          : undefined;
+      if (!markerId) {
+        setInfoOverlay(null);
+      }
+    };
+
+    viewer.addEventListener(events.ClickEvent.type, handleClick);
+    return () => {
+      viewer.removeEventListener(events.ClickEvent.type, handleClick);
+    };
+  }, [mode, hasScenes, infoOverlay, retryNonce]);
+
+  // Keep open popover content/position in sync with hotspot edits.
+  useEffect(() => {
+    if (!infoOverlay) return;
+    const hotspot = hotspots.find((item) => item.id === infoOverlay.id);
+    if (!hotspot || hotspot.type !== "info") {
+      setInfoOverlay(null);
+      return;
+    }
+    if (
+      hotspot.label === infoOverlay.label &&
+      hotspot.content === infoOverlay.content &&
+      hotspot.yaw === infoOverlay.yaw &&
+      hotspot.pitch === infoOverlay.pitch
+    ) {
+      return;
+    }
+    setInfoOverlay({
+      id: hotspot.id,
+      yaw: hotspot.yaw,
+      pitch: hotspot.pitch,
+      label: hotspot.label,
+      content: hotspot.content,
+    });
+  }, [hotspots, infoOverlay]);
 
   function handleRetry() {
     setLoadError(null);
     setLoadTimedOut(false);
     setRetryNonce((n) => n + 1);
+  }
+
+  function closeInfoOverlay() {
+    setInfoOverlay(null);
   }
 
   if (!hasScenes) {
@@ -679,25 +755,15 @@ export function PanoramaViewer({
         </div>
       ) : null}
 
-      {mode === "view" && infoOverlay ? (
-        <div className="absolute bottom-4 left-4 z-[90] max-w-sm rounded-lg bg-background/95 p-3 text-sm shadow-md ring-1 ring-foreground/10">
-          {infoOverlay.label ? (
-            <p className="font-medium">{infoOverlay.label}</p>
-          ) : null}
-          {infoOverlay.content ? (
-            <p className="mt-1 text-muted-foreground">{infoOverlay.content}</p>
-          ) : null}
-          {!infoOverlay.label && !infoOverlay.content ? (
-            <p className="text-muted-foreground">Info hotspot</p>
-          ) : null}
-          <button
-            type="button"
-            className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:underline"
-            onClick={() => setInfoOverlay(null)}
-          >
-            Close
-          </button>
-        </div>
+      {infoOverlay && viewerRef.current ? (
+        <InfoHotspotPopover
+          viewer={viewerRef.current}
+          yaw={infoOverlay.yaw}
+          pitch={infoOverlay.pitch}
+          label={infoOverlay.label}
+          content={infoOverlay.content}
+          onClose={closeInfoOverlay}
+        />
       ) : null}
     </div>
   );
