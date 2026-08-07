@@ -142,6 +142,9 @@ export type Database = {
           initial_yaw: number;
           initial_pitch: number;
           group_id: string | null;
+          floor_plan_id: string | null;
+          plan_x: number | null;
+          plan_y: number | null;
           created_at: string;
         };
         Insert: {
@@ -163,6 +166,9 @@ export type Database = {
           initial_yaw?: number;
           initial_pitch?: number;
           group_id?: string | null;
+          floor_plan_id?: string | null;
+          plan_x?: number | null;
+          plan_y?: number | null;
           created_at?: string;
         };
         Update: {
@@ -184,6 +190,9 @@ export type Database = {
           initial_yaw?: number;
           initial_pitch?: number;
           group_id?: string | null;
+          floor_plan_id?: string | null;
+          plan_x?: number | null;
+          plan_y?: number | null;
           created_at?: string;
         };
         Relationships: [
@@ -196,6 +205,64 @@ export type Database = {
           },
           {
             foreignKeyName: "scenes_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "scene_groups";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "scenes_floor_plan_id_fkey";
+            columns: ["floor_plan_id"];
+            isOneToOne: false;
+            referencedRelation: "floor_plans";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      floor_plans: {
+        Row: {
+          id: string;
+          tour_id: string;
+          group_id: string | null;
+          name: string;
+          storage_path: string;
+          width: number;
+          height: number;
+          position: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          tour_id: string;
+          group_id?: string | null;
+          name?: string;
+          storage_path: string;
+          width: number;
+          height: number;
+          position?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          tour_id?: string;
+          group_id?: string | null;
+          name?: string;
+          storage_path?: string;
+          width?: number;
+          height?: number;
+          position?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "floor_plans_tour_id_fkey";
+            columns: ["tour_id"];
+            isOneToOne: false;
+            referencedRelation: "tours";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "floor_plans_group_id_fkey";
             columns: ["group_id"];
             isOneToOne: false;
             referencedRelation: "scene_groups";

@@ -75,16 +75,18 @@ import {
 } from "@/lib/scene-groups";
 import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
-import type { Scene, SceneGroup } from "@/types";
+import type { FloorPlan, Scene, SceneGroup } from "@/types";
 
 type SceneSidebarProps = {
   tourId: string;
   userId: string;
   scenes: Scene[];
   groups: SceneGroup[];
+  floorPlans: FloorPlan[];
   activeSceneId: string | null;
   onScenesChange: (scenes: Scene[]) => void;
   onGroupsChange: (groups: SceneGroup[]) => void;
+  onFloorPlansChange: (plans: FloorPlan[]) => void;
   onActiveSceneChange: (sceneId: string | null) => void;
   nadirType?: string;
   nadirLogoPath?: string | null;
@@ -125,9 +127,11 @@ export function SceneSidebar({
   userId,
   scenes,
   groups,
+  floorPlans,
   activeSceneId,
   onScenesChange,
   onGroupsChange,
+  onFloorPlansChange,
   onActiveSceneChange,
   nadirType = "none",
   nadirLogoPath = null,
@@ -456,11 +460,31 @@ export function SceneSidebar({
   async function handleDeleteGroup(group: SceneGroup) {
     const previousGroups = groups;
     const previousScenes = scenes;
+    const previousPlans = floorPlans;
+    const removedPlans = floorPlans.filter((plan) => plan.group_id === group.id);
     onGroupsChange(groups.filter((item) => item.id !== group.id));
+    onFloorPlansChange(
+      floorPlans.filter((plan) => plan.group_id !== group.id),
+    );
     onScenesChange(
-      scenes.map((scene) =>
-        scene.group_id === group.id ? { ...scene, group_id: null } : scene,
-      ),
+      scenes.map((scene) => {
+        let next = scene;
+        if (scene.group_id === group.id) {
+          next = { ...next, group_id: null };
+        }
+        if (
+          scene.floor_plan_id &&
+          removedPlans.some((plan) => plan.id === scene.floor_plan_id)
+        ) {
+          next = {
+            ...next,
+            floor_plan_id: null,
+            plan_x: null,
+            plan_y: null,
+          };
+        }
+        return next;
+      }),
     );
     if (uploadGroupId === group.id) {
       setUploadGroupId(null);
@@ -472,12 +496,17 @@ export function SceneSidebar({
     if (!ok) {
       onGroupsChange(previousGroups);
       onScenesChange(previousScenes);
+      onFloorPlansChange(previousPlans);
       toast.error("Could not delete group");
       return;
     }
 
     setDeleteGroupTarget(null);
-    toast.success("Group deleted — scenes are now ungrouped");
+    toast.success(
+      removedPlans.length > 0
+        ? "Group deleted — scenes ungrouped, linked floor plans removed"
+        : "Group deleted — scenes are now ungrouped",
+    );
   }
 
   return (
@@ -761,6 +790,16 @@ export function SceneSidebar({
             <AlertDialogDescription>
               Scenes in this group will not be deleted — they become ungrouped.
               You can reassign them later.
+              {deleteGroupTarget &&
+              floorPlans.some(
+                (plan) => plan.group_id === deleteGroupTarget.id,
+              ) ? (
+                <>
+                  {" "}
+                  Floor plans bound to this group will also be deleted (their
+                  images are removed).
+                </>
+              ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

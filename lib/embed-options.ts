@@ -23,6 +23,8 @@ export type EmbedChromeOptions = {
   showIntro: boolean;
   /** When false, hide the group selector even if the tour has groups. */
   showGroups: boolean;
+  /** When false, hide the floor plan panel. */
+  showPlan: boolean;
 };
 
 export const DEFAULT_EMBED_CHROME: EmbedChromeOptions = {
@@ -37,6 +39,7 @@ export const DEFAULT_EMBED_CHROME: EmbedChromeOptions = {
   showVr: true,
   showIntro: true,
   showGroups: true,
+  showPlan: true,
 };
 
 function isOff(value: string | null | undefined): boolean {
@@ -82,6 +85,7 @@ export function parseEmbedSearchParams(
     showVr: !isOff(searchParams.get("vr")),
     showIntro: !isOff(searchParams.get("intro")),
     showGroups: !isOff(searchParams.get("groups")),
+    showPlan: !isOff(searchParams.get("plan")),
   };
 }
 

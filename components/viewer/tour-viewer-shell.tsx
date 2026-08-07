@@ -1,9 +1,10 @@
 "use client";
 
-import type { Viewer } from "@photo-sphere-viewer/core";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-
 import { FullscreenToggle } from "@/components/viewer/fullscreen-toggle";
+import {
+  FloorPlanPanel,
+  resolveCurrentFloorPlan,
+} from "@/components/viewer/floor-plan-panel";
 import {
   filterScenesForGroupKey,
   GroupSelector,
@@ -16,7 +17,12 @@ import { ShareButton } from "@/components/viewer/share-button";
 import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
 import { useAutorotate } from "@/components/viewer/use-autorotate";
 import { VrToggle } from "@/components/viewer/vr-toggle";
+import { Button } from "@/components/ui/button";
 import { resolvePanoramaPath } from "@/lib/gl-capabilities";
+import {
+  readFloorPlanExpanded,
+  writeFloorPlanExpanded,
+} from "@/lib/floor-plans";
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { publicUrl } from "@/lib/storage";
 import {
@@ -25,12 +31,16 @@ import {
   isTransitionEffect,
   type ViewerEffectsSettings,
 } from "@/lib/viewer-effects";
-import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import { MapIcon } from "lucide-react";
+import type { Viewer } from "@photo-sphere-viewer/core";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 export type TourViewerShellProps = {
   tour: Tour;
   scenes: Scene[];
   groups?: SceneGroup[];
+  floorPlans?: FloorPlan[];
   hotspots: Hotspot[];
   /** When true, record a public view (public + embed pages). */
   trackViews?: boolean;
@@ -44,6 +54,8 @@ export type TourViewerShellProps = {
   showThumbs?: boolean;
   /** Show group selector when groups exist. Default true. */
   showGroups?: boolean;
+  /** Show floor plan panel when the current scene has a plan. Default true. */
+  showPlan?: boolean;
   /** Show fullscreen control. Default true. */
   showFullscreen?: boolean;
   /** Slow auto-rotate until the user interacts. Default false. */
@@ -135,6 +147,7 @@ export function TourViewerShell({
   tour,
   scenes,
   groups = [],
+  floorPlans = [],
   hotspots,
   trackViews = false,
   banner,
@@ -142,6 +155,7 @@ export function TourViewerShell({
   showTitle = true,
   showThumbs = true,
   showGroups = true,
+  showPlan = true,
   showFullscreen = true,
   autorotate = false,
   branded = true,
@@ -205,10 +219,22 @@ export function TourViewerShell({
       (!hasGroups && orderedScenes.length > 1) ||
       (hasGroups && stripScenes.length > 0));
 
+  const currentFloorPlan = useMemo(
+    () => resolveCurrentFloorPlan(orderedScenes, floorPlans, currentSceneId),
+    [orderedScenes, floorPlans, currentSceneId],
+  );
+  const showFloorPlanChrome = showPlan && currentFloorPlan != null;
+  const [planOpen, setPlanOpen] = useState(false);
+
+  useEffect(() => {
+    setPlanOpen(readFloorPlanExpanded(tour.id));
+  }, [tour.id]);
+
   const showTopChrome =
     effectiveShowTitle ||
     effectiveShowShare ||
     showFullscreen ||
+    showFloorPlanChrome ||
     (allowGyro && effects.gyroscopeEnabled) ||
     (allowVr && effects.vrEnabled);
 
@@ -330,6 +356,25 @@ export function TourViewerShell({
               {allowVr ? (
                 <VrToggle viewer={viewer} enabled={effects.vrEnabled} />
               ) : null}
+              {showFloorPlanChrome ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon-sm"
+                  className="shadow-sm"
+                  aria-pressed={planOpen}
+                  aria-label={planOpen ? "Hide floor plan" : "Show floor plan"}
+                  onClick={() => {
+                    setPlanOpen((prev) => {
+                      const next = !prev;
+                      writeFloorPlanExpanded(tour.id, next);
+                      return next;
+                    });
+                  }}
+                >
+                  <MapIcon className="size-4" />
+                </Button>
+              ) : null}
               {effectiveShowShare ? (
                 <ShareButton title={tour.title} text={tour.description} />
               ) : null}
@@ -337,6 +382,20 @@ export function TourViewerShell({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {showFloorPlanChrome ? (
+        <FloorPlanPanel
+          scenes={orderedScenes}
+          floorPlans={floorPlans}
+          currentSceneId={currentSceneId}
+          onSelectScene={setCurrentSceneId}
+          open={planOpen}
+          onOpenChange={(next) => {
+            setPlanOpen(next);
+            writeFloorPlanExpanded(tour.id, next);
+          }}
+        />
       ) : null}
 
       {showBottomChrome ? (

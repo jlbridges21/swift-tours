@@ -13,6 +13,7 @@ import {
   updateTourTitle,
 } from "@/app/dashboard/tours/[id]/actions";
 import { AdjustmentsPanel } from "@/components/editor/adjustments-panel";
+import { FloorPlanEditor } from "@/components/editor/floor-plan-editor";
 import { HotspotPanel } from "@/components/editor/hotspot-panel";
 import {
   HotspotToolbar,
@@ -53,12 +54,13 @@ import {
   isIntroEffect,
   isTransitionEffect,
 } from "@/lib/viewer-effects";
-import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 type TourEditorProps = {
   tour: Tour;
   scenes: Scene[];
   groups: SceneGroup[];
+  floorPlans: FloorPlan[];
   hotspots: Hotspot[];
   userId: string;
 };
@@ -91,6 +93,7 @@ function TourEditorInner({
   tour,
   scenes: initialScenes,
   groups: initialGroups,
+  floorPlans: initialFloorPlans,
   hotspots: initialHotspots,
   userId,
 }: TourEditorProps) {
@@ -99,6 +102,7 @@ function TourEditorInner({
 
   const [scenes, setScenes] = useState<EditorScene[]>(initialScenes);
   const [groups, setGroups] = useState(initialGroups);
+  const [floorPlans, setFloorPlans] = useState(initialFloorPlans);
   const [hotspots, setHotspots] = useState(initialHotspots);
   const [title, setTitle] = useState(tour.title);
   const [nadir, setNadir] = useState<NadirTourFields>({
@@ -113,7 +117,7 @@ function TourEditorInner({
     nadir_feather: tour.nadir_feather ?? 0.35,
   });
   const [rightPanel, setRightPanel] = useState<
-    "hotspots" | "nadir" | "adjustments"
+    "hotspots" | "nadir" | "adjustments" | "floorplan"
   >("hotspots");
   const [adjustmentsBypassed, setAdjustmentsBypassed] = useState(false);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(
@@ -562,12 +566,14 @@ function TourEditorInner({
               userId={userId}
               scenes={scenes}
               groups={groups}
+              floorPlans={floorPlans}
               activeSceneId={activeSceneId}
               onScenesChange={(next) => {
                 setScenes(next);
                 pruneHotspotsForScenes(next);
               }}
               onGroupsChange={setGroups}
+              onFloorPlansChange={setFloorPlans}
               onActiveSceneChange={setActiveSceneId}
               nadirType={nadir.nadir_type}
               nadirLogoPath={nadir.nadir_logo_path}
@@ -727,6 +733,23 @@ function TourEditorInner({
               <button
                 type="button"
                 role="tab"
+                aria-selected={rightPanel === "floorplan"}
+                className={cn(
+                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  rightPanel === "floorplan"
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => {
+                  setAdjustmentsBypassed(false);
+                  setRightPanel("floorplan");
+                }}
+              >
+                Plan
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={rightPanel === "adjustments"}
                 className={cn(
                   "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
@@ -749,6 +772,18 @@ function TourEditorInner({
                   values={nadir}
                   onChange={setNadir}
                   onScenesChange={setScenes}
+                />
+              ) : rightPanel === "floorplan" ? (
+                <FloorPlanEditor
+                  tourId={tour.id}
+                  userId={userId}
+                  scenes={scenes}
+                  groups={groups}
+                  floorPlans={floorPlans}
+                  activeSceneId={activeSceneId}
+                  onScenesChange={setScenes}
+                  onFloorPlansChange={setFloorPlans}
+                  onActiveSceneChange={setActiveSceneId}
                 />
               ) : rightPanel === "adjustments" ? (
                 <AdjustmentsPanel

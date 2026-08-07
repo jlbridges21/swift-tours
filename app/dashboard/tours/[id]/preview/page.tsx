@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { TourViewerShell } from "@/components/viewer/tour-viewer-shell";
 import {
   getTourById,
+  listFloorPlansForTour,
   listHotspotsForTour,
   listSceneGroupsForTour,
   listScenesForTour,
@@ -30,9 +31,10 @@ export default async function TourPreviewPage({ params }: PageProps) {
     notFound();
   }
 
-  const [scenes, groups, hotspots] = await Promise.all([
+  const [scenes, groups, floorPlans, hotspots] = await Promise.all([
     listScenesForTour(id),
     listSceneGroupsForTour(id),
+    listFloorPlansForTour(id),
     listHotspotsForTour(id),
   ]);
 
@@ -41,6 +43,7 @@ export default async function TourPreviewPage({ params }: PageProps) {
       tour={tour}
       scenes={scenes}
       groups={groups}
+      floorPlans={floorPlans}
       hotspots={hotspots}
       trackViews={false}
       showShare={false}

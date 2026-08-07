@@ -214,6 +214,27 @@
     transform: scale(1.35);
   }
 }
+
+@keyframes floor-plan-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(255 255 255 / 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(255 255 255 / 0);
+  }
+}
+
+.animate-floor-plan-pulse {
+  animation: floor-plan-pulse 1.6s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-floor-plan-pulse {
+    animation: none;
+  }
+}
+
 /* Per-scene brightness/contrast/saturation — applied to the WebGL canvas only.
    Markers live in a sibling DOM layer and stay unfiltered. */
 .psv-canvas {

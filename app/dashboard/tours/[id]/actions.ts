@@ -18,9 +18,10 @@ import {
   clampSaturation,
 } from "@/lib/adjustments";
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
+import { clampPlanCoord } from "@/lib/floor-plans";
 import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
-import type { Scene, SceneGroup } from "@/types";
+import type { FloorPlan, Scene, SceneGroup } from "@/types";
 
 export type SceneActionResult = {
   error?: string;
@@ -1199,5 +1200,297 @@ export async function copySceneAdjustmentsToTour(
   }
 
   revalidateTourCaches(tourId, owned.tour.slug);
+  return {};
+}
+
+async function requireOwnedFloorPlan(planId: string) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return {
+      error: "You must be signed in." as const,
+      supabase,
+      plan: null,
+      tour: null,
+    };
+  }
+
+  const { data: plan, error } = await supabase
+    .from("floor_plans")
+    .select("*")
+    .eq("id", planId)
+    .maybeSingle();
+
+  if (error) {
+    return { error: error.message, supabase, plan: null, tour: null };
+  }
+  if (!plan) {
+    return { error: "Floor plan not found.", supabase, plan: null, tour: null };
+  }
+
+  const owned = await requireOwnedTour(plan.tour_id);
+  if (owned.error || !owned.tour) {
+    return {
+      error: owned.error ?? "Unauthorized.",
+      supabase,
+      plan: null,
+      tour: null,
+    };
+  }
+
+  return { error: null, supabase, plan, tour: owned.tour };
+}
+
+export async function createFloorPlan(
+  tourId: string,
+  input: {
+    id: string;
+    name: string;
+    storagePath: string;
+    width: number;
+    height: number;
+    groupId?: string | null;
+  },
+): Promise<SceneActionResult & { plan?: FloorPlan }> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.user || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { supabase } = owned;
+  let groupId: string | null = input.groupId ?? null;
+
+  if (groupId) {
+    const { data: group, error: groupError } = await supabase
+      .from("scene_groups")
+      .select("id, tour_id")
+      .eq("id", groupId)
+      .maybeSingle();
+    if (groupError) return { error: groupError.message };
+    if (!group || group.tour_id !== tourId) {
+      return { error: "Group not found." };
+    }
+  }
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("floor_plans")
+    .select("position")
+    .eq("tour_id", tourId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  if (fetchError) {
+    return { error: fetchError.message };
+  }
+
+  const position = (existing?.[0]?.position ?? -1) + 1;
+  const trimmed = input.name.trim() || "Floor plan";
+
+  const { data: plan, error } = await supabase
+    .from("floor_plans")
+    .insert({
+      id: input.id,
+      tour_id: tourId,
+      group_id: groupId,
+      name: trimmed,
+      storage_path: input.storagePath,
+      width: input.width,
+      height: input.height,
+      position,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  return { plan };
+}
+
+export async function renameFloorPlan(
+  planId: string,
+  name: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedFloorPlan(planId);
+  if (owned.error || !owned.plan || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return { error: "Plan name is required." };
+  }
+
+  const { error } = await owned.supabase
+    .from("floor_plans")
+    .update({ name: trimmed })
+    .eq("id", planId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(owned.plan.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function updateFloorPlanGroup(
+  planId: string,
+  groupId: string | null,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedFloorPlan(planId);
+  if (owned.error || !owned.plan || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  if (groupId) {
+    const { data: group, error: groupError } = await owned.supabase
+      .from("scene_groups")
+      .select("id, tour_id")
+      .eq("id", groupId)
+      .maybeSingle();
+    if (groupError) return { error: groupError.message };
+    if (!group || group.tour_id !== owned.plan.tour_id) {
+      return { error: "Group not found." };
+    }
+  }
+
+  const { error } = await owned.supabase
+    .from("floor_plans")
+    .update({ group_id: groupId })
+    .eq("id", planId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(owned.plan.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function deleteFloorPlan(
+  planId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedFloorPlan(planId);
+  if (owned.error || !owned.plan || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const storagePath = owned.plan.storage_path;
+
+  const { error } = await owned.supabase
+    .from("floor_plans")
+    .delete()
+    .eq("id", planId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  const { error: storageError } = await owned.supabase.storage
+    .from("panoramas")
+    .remove([storagePath]);
+
+  if (storageError) {
+    console.error("[deleteFloorPlan] storage remove failed", {
+      planId,
+      path: storagePath,
+      message: storageError.message,
+    });
+  }
+
+  revalidateTourCaches(owned.plan.tour_id, owned.tour.slug);
+  return {};
+}
+
+/** Assign scenes to a plan without placing markers (plan_x/plan_y stay null). */
+export async function assignScenesToFloorPlan(
+  planId: string,
+  options?: { groupId?: string | null },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedFloorPlan(planId);
+  if (owned.error || !owned.plan || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const groupId =
+    options && "groupId" in options ? options.groupId : owned.plan.group_id;
+
+  let query = owned.supabase
+    .from("scenes")
+    .update({ floor_plan_id: planId })
+    .eq("tour_id", owned.plan.tour_id);
+
+  if (groupId === null) {
+    query = query.is("group_id", null);
+  } else if (typeof groupId === "string") {
+    query = query.eq("group_id", groupId);
+  }
+
+  const { error } = await query;
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(owned.plan.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function updateScenePlanPlacement(
+  sceneId: string,
+  input: {
+    floorPlanId?: string | null;
+    planX?: number | null;
+    planY?: number | null;
+  },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedScene(sceneId);
+  if (owned.error || !owned.scene || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const update: {
+    floor_plan_id?: string | null;
+    plan_x?: number | null;
+    plan_y?: number | null;
+  } = {};
+
+  if (input.floorPlanId !== undefined) {
+    if (input.floorPlanId) {
+      const { data: plan, error: planError } = await owned.supabase
+        .from("floor_plans")
+        .select("id, tour_id")
+        .eq("id", input.floorPlanId)
+        .maybeSingle();
+      if (planError) return { error: planError.message };
+      if (!plan || plan.tour_id !== owned.scene.tour_id) {
+        return { error: "Floor plan not found." };
+      }
+    }
+    update.floor_plan_id = input.floorPlanId;
+  }
+
+  if (input.planX !== undefined) {
+    update.plan_x = input.planX === null ? null : clampPlanCoord(input.planX);
+  }
+  if (input.planY !== undefined) {
+    update.plan_y = input.planY === null ? null : clampPlanCoord(input.planY);
+  }
+
+  const { error } = await owned.supabase
+    .from("scenes")
+    .update(update)
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour.slug);
   return {};
 }

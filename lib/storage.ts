@@ -46,6 +46,17 @@ export function nadirPath(
   return `${userId}/${tourId}/${sceneId}_nadir.png`;
 }
 
+/** Floor plan image under the tour folder (RLS-safe via userId prefix). */
+export function floorPlanPath(
+  userId: string,
+  tourId: string,
+  planId: string,
+  extension: ".jpg" | string = ".jpg",
+): string {
+  const ext = extension.startsWith(".") ? extension : `.${extension}`;
+  return `${userId}/${tourId}/plans/${planId}${ext}`;
+}
+
 /** Custom branding logo under the user's folder (RLS-safe). */
 export function brandingLogoPath(
   userId: string,

@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { TourEditor } from "@/components/editor/tour-editor";
 import {
   getTourById,
+  listFloorPlansForTour,
   listHotspotsForTour,
   listSceneGroupsForTour,
   listScenesForTour,
@@ -29,9 +30,10 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
     notFound();
   }
 
-  const [scenes, groups, hotspots] = await Promise.all([
+  const [scenes, groups, floorPlans, hotspots] = await Promise.all([
     listScenesForTour(id),
     listSceneGroupsForTour(id),
+    listFloorPlansForTour(id),
     listHotspotsForTour(id),
   ]);
 
@@ -40,6 +42,7 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
       tour={tour}
       scenes={scenes}
       groups={groups}
+      floorPlans={floorPlans}
       hotspots={hotspots}
       userId={user.id}
     />

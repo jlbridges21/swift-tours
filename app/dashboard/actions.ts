@@ -13,6 +13,7 @@ import {
   isTransitionEffect,
 } from "@/lib/viewer-effects";
 import type {
+  FloorPlanInsert,
   HotspotInsert,
   SceneGroupInsert,
   SceneInsert,
@@ -372,9 +373,21 @@ export async function deleteTour(id: string): Promise<ActionResult> {
     return { error: scenesError.message };
   }
 
+  const { data: plans, error: plansError } = await supabase
+    .from("floor_plans")
+    .select("storage_path")
+    .eq("tour_id", id);
+
+  if (plansError) {
+    return { error: plansError.message };
+  }
+
   const paths: string[] = [];
   for (const scene of scenes ?? []) {
     paths.push(...sceneObjectPaths(scene));
+  }
+  for (const plan of plans ?? []) {
+    paths.push(plan.storage_path);
   }
 
   const CHUNK = 100;
@@ -509,6 +522,74 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
       }
     }
 
+    const { data: originalPlans, error: plansError } = await supabase
+      .from("floor_plans")
+      .select("*")
+      .eq("tour_id", id)
+      .order("position", { ascending: true });
+
+    if (plansError) {
+      await rollback();
+      return { error: plansError.message };
+    }
+
+    const planIdMap = new Map<string, string>();
+    const plans = originalPlans ?? [];
+
+    if (plans.length > 0) {
+      const planInserts: FloorPlanInsert[] = plans.map((plan) => {
+        const newPlanId = crypto.randomUUID();
+        planIdMap.set(plan.id, newPlanId);
+        return {
+          id: newPlanId,
+          tour_id: newTourId,
+          group_id: plan.group_id
+            ? (groupIdMap.get(plan.group_id) ?? null)
+            : null,
+          name: plan.name,
+          storage_path: plan.storage_path,
+          width: plan.width,
+          height: plan.height,
+          position: plan.position,
+        };
+      });
+
+      const { error: insertPlansError } = await supabase
+        .from("floor_plans")
+        .insert(planInserts);
+
+      if (insertPlansError) {
+        await rollback();
+        return { error: insertPlansError.message };
+      }
+
+      for (const plan of plans) {
+        const newPlanId = planIdMap.get(plan.id);
+        if (!newPlanId) continue;
+
+        const newPlanPath = `${user.id}/${newTourId}/plans/${newPlanId}${extensionFromPath(plan.storage_path)}`;
+        const { error: copyPlanError } = await supabase.storage
+          .from("panoramas")
+          .copy(plan.storage_path, newPlanPath);
+
+        if (copyPlanError) {
+          await rollback();
+          return { error: copyPlanError.message };
+        }
+        copiedStoragePaths.push(newPlanPath);
+
+        const { error: updatePlanError } = await supabase
+          .from("floor_plans")
+          .update({ storage_path: newPlanPath })
+          .eq("id", newPlanId);
+
+        if (updatePlanError) {
+          await rollback();
+          return { error: updatePlanError.message };
+        }
+      }
+    }
+
     const { data: originalScenes, error: scenesError } = await supabase
       .from("scenes")
       .select("*")
@@ -548,6 +629,11 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           group_id: scene.group_id
             ? (groupIdMap.get(scene.group_id) ?? null)
             : null,
+          floor_plan_id: scene.floor_plan_id
+            ? (planIdMap.get(scene.floor_plan_id) ?? null)
+            : null,
+          plan_x: scene.plan_x,
+          plan_y: scene.plan_y,
         };
       });
 

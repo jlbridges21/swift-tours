@@ -1,6 +1,6 @@
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { createClient } from "@/lib/supabase/server";
-import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 export type TourListItem = Tour & {
   scene_count: number;
@@ -121,6 +121,24 @@ export async function listScenesForTour(tourId: string): Promise<Scene[]> {
   }
 
   return sortScenesByGroupOrder(scenes ?? [], groups ?? []);
+}
+
+export async function listFloorPlansForTour(
+  tourId: string,
+): Promise<FloorPlan[]> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("floor_plans")
+    .select("*")
+    .eq("tour_id", tourId)
+    .order("position", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
 }
 
 export async function listHotspotsForTour(tourId: string): Promise<Hotspot[]> {

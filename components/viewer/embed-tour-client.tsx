@@ -4,12 +4,13 @@ import { useSearchParams } from "next/navigation";
 
 import { TourViewerShell } from "@/components/viewer/tour-viewer-shell";
 import { parseEmbedSearchParams } from "@/lib/embed-options";
-import type { Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
 
 type EmbedTourClientProps = {
   tour: Tour;
   scenes: Scene[];
   groups: SceneGroup[];
+  floorPlans: FloorPlan[];
   hotspots: Hotspot[];
 };
 
@@ -21,6 +22,7 @@ export function EmbedTourClient({
   tour,
   scenes,
   groups,
+  floorPlans,
   hotspots,
 }: EmbedTourClientProps) {
   const searchParams = useSearchParams();
@@ -31,6 +33,7 @@ export function EmbedTourClient({
       tour={tour}
       scenes={scenes}
       groups={groups}
+      floorPlans={floorPlans}
       hotspots={hotspots}
       trackViews
       embedMode
@@ -40,6 +43,7 @@ export function EmbedTourClient({
       showShare={chrome.showShare}
       showFullscreen={chrome.showFullscreen}
       showGroups={chrome.showGroups}
+      showPlan={chrome.showPlan}
       autorotate={chrome.autorotate}
       startSceneId={chrome.startSceneId}
       allowGyro={chrome.showGyro}
