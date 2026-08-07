@@ -45,6 +45,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { adjustmentFilter } from "@/lib/adjustments";
 import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import type { Scene } from "@/types";
@@ -58,6 +59,8 @@ type SceneSidebarProps = {
   onActiveSceneChange: (sceneId: string | null) => void;
   nadirType?: string;
   nadirLogoPath?: string | null;
+  nadirLogoSource?: string;
+  nadirFeather?: number;
   onNadirPatchReady?: (sceneId: string, nadirPatchPath: string) => void;
 };
 
@@ -70,6 +73,8 @@ export function SceneSidebar({
   onActiveSceneChange,
   nadirType = "none",
   nadirLogoPath = null,
+  nadirLogoSource = "default",
+  nadirFeather = 0.35,
   onNadirPatchReady,
 }: SceneSidebarProps) {
   const { run } = useSaveStatus();
@@ -266,6 +271,8 @@ export function SceneSidebar({
           nextPosition={nextPosition}
           nadirType={nadirType}
           nadirLogoPath={nadirLogoPath}
+          nadirLogoSource={nadirLogoSource}
+          nadirFeather={nadirFeather}
           onNadirPatchReady={onNadirPatchReady}
         />
       </div>
@@ -377,6 +384,7 @@ function SortableSceneItem({
               fill
               className="object-cover"
               sizes="48px"
+              style={{ filter: adjustmentFilter(scene) || undefined }}
             />
           ) : null}
         </div>

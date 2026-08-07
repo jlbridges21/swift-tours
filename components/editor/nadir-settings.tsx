@@ -8,7 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
   DEFAULT_NADIR_LOGO_URL,
+  isNadirLogoSource,
   isNadirType,
+  type NadirLogoSource,
   type NadirType,
 } from "@/lib/nadir";
 import {
@@ -22,22 +24,29 @@ import { brandingLogoPath } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import type { Scene, Tour } from "@/types";
 
+export type EditorScene = Scene & {
+  nadir_preview_url?: string | null;
+};
+
 export type NadirTourFields = Pick<
   Tour,
   | "nadir_type"
   | "nadir_logo_path"
+  | "nadir_logo_source"
   | "nadir_size"
   | "nadir_opacity"
   | "nadir_rotation"
+  | "nadir_feather"
 >;
 
 type NadirSettingsProps = {
   tourId: string;
   userId: string;
-  scenes: Scene[];
+  scenes: EditorScene[];
+  activeSceneId: string | null;
   values: NadirTourFields;
   onChange: (next: NadirTourFields) => void;
-  onScenesChange: (scenes: Scene[]) => void;
+  onScenesChange: (scenes: EditorScene[]) => void;
   className?: string;
 };
 
@@ -55,6 +64,7 @@ export function NadirSettings({
   tourId,
   userId,
   scenes,
+  activeSceneId,
   values,
   onChange,
   onScenesChange,
@@ -62,31 +72,52 @@ export function NadirSettings({
 }: NadirSettingsProps) {
   const [pending, startTransition] = useTransition();
   const [applying, setApplying] = useState(false);
+  const [regenPending, setRegenPending] = useState(false);
   const [applyProgress, setApplyProgress] = useState<{
     done: number;
     total: number;
   } | null>(null);
-  const [logoMode, setLogoMode] = useState<"default" | "custom">(
-    values.nadir_logo_path ? "custom" : "default",
-  );
   const fileRef = useRef<HTMLInputElement>(null);
   const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const regenerateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewUrls = useRef(new Map<string, string>());
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
 
   const type: NadirType = isNadirType(values.nadir_type)
     ? values.nadir_type
     : "none";
-
-  useEffect(() => {
-    setLogoMode(values.nadir_logo_path ? "custom" : "default");
-  }, [values.nadir_logo_path]);
+  const logoSource: NadirLogoSource = isNadirLogoSource(values.nadir_logo_source)
+    ? values.nadir_logo_source
+    : values.nadir_logo_path
+      ? "custom"
+      : "default";
 
   useEffect(() => {
     return () => {
       if (persistTimer.current) clearTimeout(persistTimer.current);
       if (regenerateTimer.current) clearTimeout(regenerateTimer.current);
+      for (const url of previewUrls.current.values()) {
+        URL.revokeObjectURL(url);
+      }
+      previewUrls.current.clear();
     };
   }, []);
+
+  function setPreview(sceneId: string, url: string | null) {
+    const prev = previewUrls.current.get(sceneId);
+    if (prev && prev !== url) {
+      URL.revokeObjectURL(prev);
+      previewUrls.current.delete(sceneId);
+    }
+    if (url) previewUrls.current.set(sceneId, url);
+
+    onScenesChange(
+      scenesRef.current.map((scene) =>
+        scene.id === sceneId ? { ...scene, nadir_preview_url: url } : scene,
+      ),
+    );
+  }
 
   function persist(patch: Partial<NadirTourFields>, debounceMs = 400) {
     if (persistTimer.current) clearTimeout(persistTimer.current);
@@ -113,39 +144,111 @@ export function NadirSettings({
     persist({ [key]: value });
   }
 
+  async function regenerateScene(
+    scene: EditorScene,
+    nextType: NadirType,
+    nextLogoSource: NadirLogoSource,
+    nextLogoPath: string | null,
+    nextFeather: number,
+  ): Promise<EditorScene> {
+    if (nextType === "none") {
+      setPreview(scene.id, null);
+      const result = await clearNadirPatchForScene(scene);
+      if (result.error) {
+        console.error("[nadir] clear failed", scene.id, result.error);
+        return scene;
+      }
+      return { ...scene, nadir_patch_path: null, nadir_preview_url: null };
+    }
+
+    const result = await uploadNadirPatchForScene({
+      userId,
+      tourId,
+      scene,
+      type: nextType,
+      logoSource: nextLogoSource,
+      logoPath: nextLogoPath,
+      feather: nextFeather,
+      onPreviewUrl: (sceneId, url) => setPreview(sceneId, url),
+    });
+
+    if ("path" in result) {
+      const updated: EditorScene = {
+        ...scene,
+        nadir_patch_path: result.path,
+        nadir_preview_url: null,
+      };
+      // Drop blob preview only after the stored path is on the scene.
+      const prev = previewUrls.current.get(scene.id);
+      if (prev) {
+        URL.revokeObjectURL(prev);
+        previewUrls.current.delete(scene.id);
+      }
+      if (result.previewUrl !== prev) {
+        URL.revokeObjectURL(result.previewUrl);
+      }
+      return updated;
+    }
+
+    console.error("[nadir] regenerate failed", scene.id, result.error);
+    setPreview(scene.id, null);
+    return scene;
+  }
+
+  async function regenerateCurrent(
+    nextType: NadirType,
+    nextLogoSource: NadirLogoSource,
+    nextLogoPath: string | null,
+    nextFeather: number,
+  ) {
+    const scene =
+      scenesRef.current.find((item) => item.id === activeSceneId) ??
+      scenesRef.current[0];
+    if (!scene) return;
+
+    setRegenPending(true);
+    try {
+      const updated = await regenerateScene(
+        scene,
+        nextType,
+        nextLogoSource,
+        nextLogoPath,
+        nextFeather,
+      );
+      onScenesChange(
+        scenesRef.current.map((item) =>
+          item.id === updated.id ? updated : item,
+        ),
+      );
+    } finally {
+      setRegenPending(false);
+    }
+  }
+
   async function regenerateAll(
     nextType: NadirType,
+    nextLogoSource: NadirLogoSource,
     nextLogoPath: string | null,
+    nextFeather: number,
   ) {
-    if (scenes.length === 0) return;
+    const list = scenesRef.current;
+    if (list.length === 0) return;
     setApplying(true);
-    setApplyProgress({ done: 0, total: scenes.length });
+    setApplyProgress({ done: 0, total: list.length });
 
     let done = 0;
-    const updated = [...scenes];
+    const updated = [...list];
 
-    await mapPool(scenes, 3, async (scene, index) => {
-      if (nextType === "none") {
-        const result = await clearNadirPatchForScene(scene);
-        if (!result.error) {
-          updated[index] = { ...scene, nadir_patch_path: null };
-        }
-      } else {
-        const result = await uploadNadirPatchForScene({
-          userId,
-          tourId,
-          scene,
-          type: nextType,
-          logoPath: nextLogoPath,
-        });
-        if ("path" in result) {
-          updated[index] = { ...scene, nadir_patch_path: result.path };
-        } else {
-          console.error("[nadir] regenerate failed", scene.id, result.error);
-        }
-      }
+    await mapPool(list, 3, async (scene, index) => {
+      updated[index] = await regenerateScene(
+        scene,
+        nextType,
+        nextLogoSource,
+        nextLogoPath,
+        nextFeather,
+      );
       done += 1;
-      setApplyProgress({ done, total: scenes.length });
+      setApplyProgress({ done, total: list.length });
     });
 
     onScenesChange(updated);
@@ -153,28 +256,41 @@ export function NadirSettings({
     setApplyProgress(null);
   }
 
-  function scheduleRegenerate(
+  function scheduleCurrentRegen(
     nextType: NadirType,
+    nextLogoSource: NadirLogoSource,
     nextLogoPath: string | null,
+    nextFeather: number,
+    debounceMs = 250,
   ) {
     if (regenerateTimer.current) clearTimeout(regenerateTimer.current);
     regenerateTimer.current = setTimeout(() => {
-      void regenerateAll(nextType, nextLogoPath);
-    }, 500);
+      void regenerateCurrent(
+        nextType,
+        nextLogoSource,
+        nextLogoPath,
+        nextFeather,
+      );
+    }, debounceMs);
   }
 
   function handleTypeChange(next: NadirType) {
     updateLocal({ nadir_type: next });
     persist({ nadir_type: next }, 0);
-    scheduleRegenerate(next, values.nadir_logo_path);
+    scheduleCurrentRegen(
+      next,
+      logoSource,
+      values.nadir_logo_path,
+      values.nadir_feather,
+      100,
+    );
   }
 
   function handleLogoDefault() {
-    setLogoMode("default");
-    updateLocal({ nadir_logo_path: null });
-    persist({ nadir_logo_path: null }, 0);
+    updateLocal({ nadir_logo_source: "default", nadir_logo_path: null });
+    persist({ nadir_logo_source: "default", nadir_logo_path: null }, 0);
     if (type === "logo") {
-      scheduleRegenerate("logo", null);
+      scheduleCurrentRegen("logo", "default", null, values.nadir_feather, 100);
     }
   }
 
@@ -201,17 +317,36 @@ export function NadirSettings({
       return;
     }
 
-    setLogoMode("custom");
-    updateLocal({ nadir_logo_path: path });
-    persist({ nadir_logo_path: path }, 0);
+    updateLocal({ nadir_logo_source: "custom", nadir_logo_path: path });
+    persist({ nadir_logo_source: "custom", nadir_logo_path: path }, 0);
     if (type === "logo") {
-      scheduleRegenerate("logo", path);
+      scheduleCurrentRegen("logo", "custom", path, values.nadir_feather, 100);
     }
     toast.success("Logo uploaded");
   }
 
+  function handleFeather(value: number) {
+    const feather = clamp(value, 0, 1);
+    updateLocal({ nadir_feather: feather });
+    persist({ nadir_feather: feather });
+    if (type !== "none") {
+      scheduleCurrentRegen(
+        type,
+        logoSource,
+        values.nadir_logo_path,
+        feather,
+        250,
+      );
+    }
+  }
+
   async function handleApplyAll() {
-    await regenerateAll(type, values.nadir_logo_path);
+    await regenerateAll(
+      type,
+      logoSource,
+      values.nadir_logo_path,
+      values.nadir_feather,
+    );
     toast.success(
       type === "none"
         ? "Nadir patches cleared on all scenes"
@@ -219,10 +354,10 @@ export function NadirSettings({
     );
   }
 
-  const previewLogoUrl =
-    logoMode === "custom" && values.nadir_logo_path
-      ? resolveNadirLogoUrl(values.nadir_logo_path)
-      : DEFAULT_NADIR_LOGO_URL;
+  const previewLogoUrl = resolveNadirLogoUrl(
+    logoSource,
+    values.nadir_logo_path,
+  );
 
   return (
     <div className={cn("flex flex-col gap-4 p-3", className)}>
@@ -270,7 +405,7 @@ export function NadirSettings({
               type="button"
               className={cn(
                 "flex size-14 items-center justify-center overflow-hidden rounded-md ring-1 ring-foreground/10",
-                logoMode === "default" && "ring-2 ring-foreground",
+                logoSource === "default" && "ring-2 ring-foreground",
               )}
               onClick={handleLogoDefault}
               title="Default logo"
@@ -282,7 +417,7 @@ export function NadirSettings({
                 className="size-12 object-contain"
               />
             </button>
-            {logoMode === "custom" && values.nadir_logo_path ? (
+            {logoSource === "custom" && values.nadir_logo_path ? (
               <button
                 type="button"
                 className="flex size-14 items-center justify-center overflow-hidden rounded-md ring-2 ring-foreground"
@@ -322,8 +457,13 @@ export function NadirSettings({
 
       {type !== "none" ? (
         <>
+          <p className="text-[11px] text-muted-foreground">
+            Size, opacity, and rotation are instant. Type, logo, and feather
+            regenerate the patch (~250ms debounce on the current scene).
+          </p>
           <RangeField
             label="Size"
+            hint="instant"
             min={0.1}
             max={1}
             step={0.01}
@@ -334,6 +474,7 @@ export function NadirSettings({
           />
           <RangeField
             label="Opacity"
+            hint="instant"
             min={0.1}
             max={1}
             step={0.01}
@@ -346,6 +487,7 @@ export function NadirSettings({
           />
           <RangeField
             label="Rotation"
+            hint="instant"
             min={0}
             max={360}
             step={1}
@@ -356,6 +498,22 @@ export function NadirSettings({
             }
             display={`${Math.round(values.nadir_rotation)}°`}
           />
+          <RangeField
+            label="Feather"
+            hint="regenerates"
+            min={0}
+            max={1}
+            step={0.01}
+            value={values.nadir_feather}
+            disabled={applying}
+            onChange={handleFeather}
+            display={`${Math.round(values.nadir_feather * 100)}%`}
+          />
+          {regenPending ? (
+            <p className="text-[11px] text-muted-foreground" role="status">
+              Updating current scene…
+            </p>
+          ) : null}
         </>
       ) : null}
 
@@ -372,9 +530,29 @@ export function NadirSettings({
             ? `Applying… ${applyProgress?.done ?? 0}/${applyProgress?.total ?? 0}`
             : "Apply to all scenes in this tour"}
         </Button>
+        {applying ? (
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-valuenow={applyProgress?.done ?? 0}
+            aria-valuemin={0}
+            aria-valuemax={applyProgress?.total ?? 1}
+          >
+            <div
+              className="h-full bg-foreground transition-[width] duration-150"
+              style={{
+                width: `${
+                  applyProgress && applyProgress.total > 0
+                    ? (100 * applyProgress.done) / applyProgress.total
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        ) : null}
         <p className="text-xs text-muted-foreground">
-          Generates a patch per scene from its panorama. Size, opacity, and
-          rotation update live without regenerating.
+          Patches are generated from each scene’s thumbnail. Use Apply to all
+          after changing type, logo, or feather.
         </p>
       </div>
     </div>
@@ -383,6 +561,7 @@ export function NadirSettings({
 
 function RangeField({
   label,
+  hint,
   min,
   max,
   step,
@@ -392,6 +571,7 @@ function RangeField({
   onChange,
 }: {
   label: string;
+  hint?: string;
   min: number;
   max: number;
   step: number;
@@ -403,7 +583,14 @@ function RangeField({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label className="text-xs">{label}</Label>
+        <Label className="text-xs">
+          {label}
+          {hint ? (
+            <span className="ml-1 font-normal text-muted-foreground">
+              · {hint}
+            </span>
+          ) : null}
+        </Label>
         <span className="text-xs tabular-nums text-muted-foreground">
           {display}
         </span>

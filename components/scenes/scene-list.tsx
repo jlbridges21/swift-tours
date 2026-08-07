@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { adjustmentFilter } from "@/lib/adjustments";
 import { publicUrl } from "@/lib/storage";
 import type { Scene } from "@/types";
 
@@ -146,6 +147,7 @@ function SceneListItem({
               fill
               className="object-cover"
               sizes="64px"
+              style={{ filter: adjustmentFilter(scene) || undefined }}
             />
           ) : null}
         </div>

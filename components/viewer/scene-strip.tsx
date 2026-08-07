@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 
 import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
+import { adjustmentFilter } from "@/lib/adjustments";
 import type { Scene } from "@/types";
 
 type SceneStripProps = {
@@ -92,6 +93,7 @@ export function SceneStrip({
                   loading="lazy"
                   decoding="async"
                   className="h-full w-full object-cover"
+                  style={{ filter: adjustmentFilter(scene) || undefined }}
                 />
               ) : (
                 <span className="flex h-full w-full items-center justify-center bg-neutral-800 text-[10px] text-white/80">

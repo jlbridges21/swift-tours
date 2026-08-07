@@ -1,17 +1,28 @@
 /**
  * Client-side nadir (floor/tripod) patch generation.
  * Output is a circular feathered PNG — never baked into the panorama itself.
+ *
+ * Note: the nadir patch is a 3D `imageLayer` inside the PSV canvas, so scene
+ * CSS adjustments (brightness/contrast/saturation) also tint this patch.
+ * That keeps the blurred floor matching the panorama; a logo cap is adjusted
+ * too. Acceptable — matching the floor matters more than an unfiltered logo.
  */
 
 export const NADIR_MARKER_ID = "__nadir__";
 export const DEFAULT_NADIR_LOGO_URL = "/nadir/default-logo.png";
 
 export type NadirType = "none" | "blur" | "logo";
+export type NadirLogoSource = "default" | "custom";
 
 export const NADIR_TYPES: NadirType[] = ["none", "blur", "logo"];
+export const NADIR_LOGO_SOURCES: NadirLogoSource[] = ["default", "custom"];
 
 export function isNadirType(value: string): value is NadirType {
   return (NADIR_TYPES as string[]).includes(value);
+}
+
+export function isNadirLogoSource(value: string): value is NadirLogoSource {
+  return (NADIR_LOGO_SOURCES as string[]).includes(value);
 }
 
 export function isNadirMarkerId(id: string | null | undefined): boolean {
@@ -21,30 +32,72 @@ export function isNadirMarkerId(id: string | null | undefined): boolean {
 const OUTPUT_SIZE = 1024;
 const SAMPLE_BAND_RATIO = 0.14;
 const SAMPLE_HEIGHT = 64;
+const DEFAULT_FEATHER = 0.35;
 
+/**
+ * Load an image for canvas compositing.
+ *
+ * Only set crossOrigin for cross-origin http(s) URLs (Supabase Storage).
+ * Same-origin `/public` assets must NOT use crossOrigin=anonymous — Next's
+ * static handler often omits ACAO, so the load fails (or taints) and the
+ * logo never draws. Blob URLs are same-document and need no CORS flag.
+ */
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    // Required before src — otherwise the canvas is tainted and toBlob throws.
-    img.crossOrigin = "anonymous";
+    if (needsCrossOrigin(url)) {
+      img.crossOrigin = "anonymous";
+    }
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error(`Failed to load image: ${url}`));
     img.src = url;
   });
 }
 
+function needsCrossOrigin(url: string): boolean {
+  if (url.startsWith("blob:") || url.startsWith("data:")) return false;
+  if (url.startsWith("/")) return false;
+  if (typeof window === "undefined") return true;
+  try {
+    const absolute = new URL(url, window.location.href);
+    return absolute.origin !== window.location.origin;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Map feather 0–1 → radial opaque-stop (fraction of radius).
+ * 0.0 = hard edge; 0.35 ≈ legacy stops; 1.0 = fade starts near center.
+ */
+export function featherOpaqueStop(feather: number): number {
+  const f = Math.min(1, Math.max(0, feather));
+  if (f <= DEFAULT_FEATHER) {
+    // 0 → 0.99, 0.35 → 0.42
+    return 0.99 + (f / DEFAULT_FEATHER) * (0.42 - 0.99);
+  }
+  // 0.35 → 0.42, 1 → 0.08
+  return 0.42 + ((f - DEFAULT_FEATHER) / (1 - DEFAULT_FEATHER)) * (0.08 - 0.42);
+}
+
+export type GenerateNadirOptions = {
+  type: "blur" | "logo";
+  logoSource?: NadirLogoSource;
+  /** Storage path or absolute/relative URL when logoSource is 'custom'. */
+  logoUrl?: string | null;
+  /** 0 = hard edge, 1 = very soft. Default 0.35 matches the original mask. */
+  feather?: number;
+};
+
 /**
  * Generate a circular nadir patch PNG (with alpha).
- * Blur base is sampled from the panorama's bottom band; logo composites on top.
+ * Prefer feeding a thumbnail URL — full-res panoramas are wasted once blurred.
  */
 export async function generateNadirPatch(
-  panoramaUrl: string,
-  options: {
-    type: "blur" | "logo";
-    logoUrl?: string | null;
-  },
+  sampleImageUrl: string,
+  options: GenerateNadirOptions,
 ): Promise<Blob> {
-  const panorama = await loadImage(panoramaUrl);
+  const panorama = await loadImage(sampleImageUrl);
 
   const bandHeight = Math.max(
     1,
@@ -90,29 +143,51 @@ export async function generateNadirPatch(
   ctx.restore();
 
   // Feather outer edge with a radial alpha mask.
+  const feather = options.feather ?? DEFAULT_FEATHER;
+  const opaque = featherOpaqueStop(feather);
+  const mid = opaque + (1 - opaque) * 0.55;
   ctx.globalCompositeOperation = "destination-in";
   const gradient = ctx.createRadialGradient(
     OUTPUT_SIZE / 2,
     OUTPUT_SIZE / 2,
-    OUTPUT_SIZE * 0.42,
+    OUTPUT_SIZE * opaque,
     OUTPUT_SIZE / 2,
     OUTPUT_SIZE / 2,
     OUTPUT_SIZE / 2,
   );
   gradient.addColorStop(0, "rgba(0,0,0,1)");
-  gradient.addColorStop(0.72, "rgba(0,0,0,1)");
+  gradient.addColorStop(Math.min(0.999, mid), "rgba(0,0,0,1)");
   gradient.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
   ctx.globalCompositeOperation = "source-over";
 
   if (options.type === "logo") {
-    const logoUrl = options.logoUrl?.trim() || DEFAULT_NADIR_LOGO_URL;
+    const source = options.logoSource ?? "default";
+    const logoUrl =
+      source === "custom" && options.logoUrl?.trim()
+        ? options.logoUrl.trim()
+        : DEFAULT_NADIR_LOGO_URL;
     const logo = await loadImage(logoUrl);
     const logoSize = Math.round(OUTPUT_SIZE * 0.6);
     const logoX = Math.round((OUTPUT_SIZE - logoSize) / 2);
     const logoY = Math.round((OUTPUT_SIZE - logoSize) / 2);
+    const cx = OUTPUT_SIZE / 2;
+    const cy = OUTPUT_SIZE / 2;
+
+    // Soft contrasting disc + shadow so light logos stay visible on light floors.
+    // (Default logo is dark; this still helps custom light artwork.)
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, logoSize * 0.52, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.fill();
+    ctx.shadowColor = "rgba(0,0,0,0.45)";
+    ctx.shadowBlur = logoSize * 0.08;
+    ctx.shadowOffsetY = logoSize * 0.02;
     ctx.drawImage(logo, logoX, logoY, logoSize, logoSize);
+    ctx.restore();
   }
 
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -131,6 +206,17 @@ export async function generateNadirPatch(
   out.height = 0;
 
   return blob;
+}
+
+/** Prefer thumbnail → compat → full for patch sampling (blur discards detail). */
+export function nadirSamplePath(scene: {
+  thumbnail_path?: string | null;
+  compat_path?: string | null;
+  storage_path: string;
+}): string {
+  if (scene.thumbnail_path) return scene.thumbnail_path;
+  if (scene.compat_path) return scene.compat_path;
+  return scene.storage_path;
 }
 
 /** Map 0.1–1.0 tour size into imageLayer pixel size (PSV scales by /100). */
@@ -173,4 +259,3 @@ export function buildNadirMarkerConfig(options: {
     data: { nadir: true },
   };
 }
-

@@ -6,7 +6,7 @@ import { toast } from "sonner";
 
 import { createScene } from "@/app/dashboard/tours/[id]/actions";
 import { processPanorama, validatePanorama } from "@/lib/image";
-import { isNadirType } from "@/lib/nadir";
+import { isNadirLogoSource, isNadirType } from "@/lib/nadir";
 import { uploadNadirPatchForScene } from "@/lib/nadir-upload";
 import { createClient } from "@/lib/supabase/client";
 import { compatPath, scenePath, thumbPath } from "@/lib/storage";
@@ -37,6 +37,8 @@ type SceneUploaderProps = {
   /** When not 'none', generate a nadir patch after each scene is created (non-blocking). */
   nadirType?: string;
   nadirLogoPath?: string | null;
+  nadirLogoSource?: string;
+  nadirFeather?: number;
   onNadirPatchReady?: (sceneId: string, nadirPatchPath: string) => void;
 };
 
@@ -80,6 +82,8 @@ export function SceneUploader({
   nextPosition,
   nadirType = "none",
   nadirLogoPath = null,
+  nadirLogoSource = "default",
+  nadirFeather = 0.35,
   onNadirPatchReady,
 }: SceneUploaderProps) {
   const router = useRouter();
@@ -239,9 +243,18 @@ export function SceneUploader({
             void uploadNadirPatchForScene({
               userId,
               tourId,
-              scene: { id: item.sceneId, storage_path: storageFull },
+              scene: {
+                id: item.sceneId,
+                storage_path: storageFull,
+                thumbnail_path: storageThumb,
+                compat_path: storageCompat,
+              },
               type: nadirType,
+              logoSource: isNadirLogoSource(nadirLogoSource)
+                ? nadirLogoSource
+                : "default",
               logoPath: nadirLogoPath,
+              feather: nadirFeather,
             }).then((nadirResult) => {
               if ("path" in nadirResult) {
                 onNadirPatchReady?.(item.sceneId, nadirResult.path);
@@ -292,6 +305,8 @@ export function SceneUploader({
       userId,
       nadirType,
       nadirLogoPath,
+      nadirLogoSource,
+      nadirFeather,
       onNadirPatchReady,
     ],
   );

@@ -214,3 +214,14 @@
     transform: scale(1.35);
   }
 }
+/* Per-scene brightness/contrast/saturation — applied to the WebGL canvas only.
+   Markers live in a sibling DOM layer and stay unfiltered. */
+.psv-canvas {
+  transition: filter 150ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .psv-canvas {
+    transition: none;
+  }
+}

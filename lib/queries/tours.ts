@@ -4,12 +4,20 @@ import type { Hotspot, Scene, Tour } from "@/types";
 export type TourListItem = Tour & {
   scene_count: number;
   cover_thumbnail_path: string | null;
+  cover_adjust_brightness: number;
+  cover_adjust_contrast: number;
+  cover_adjust_saturation: number;
   view_count: number;
 };
 
 type TourQueryRow = Tour & {
   scenes: { count: number }[] | null;
-  cover_scene: { thumbnail_path: string | null } | null;
+  cover_scene: {
+    thumbnail_path: string | null;
+    adjust_brightness: number;
+    adjust_contrast: number;
+    adjust_saturation: number;
+  } | null;
   tour_views: { count: number }[] | null;
 };
 
@@ -22,7 +30,12 @@ export async function listTours(): Promise<TourListItem[]> {
       `
       *,
       scenes!scenes_tour_id_fkey(count),
-      cover_scene:scenes!fk_cover_scene(thumbnail_path),
+      cover_scene:scenes!fk_cover_scene(
+        thumbnail_path,
+        adjust_brightness,
+        adjust_contrast,
+        adjust_saturation
+      ),
       tour_views(count)
     `,
     )
@@ -40,6 +53,9 @@ export async function listTours(): Promise<TourListItem[]> {
       ...tour,
       scene_count: scenes?.[0]?.count ?? 0,
       cover_thumbnail_path: cover_scene?.thumbnail_path ?? null,
+      cover_adjust_brightness: cover_scene?.adjust_brightness ?? 1,
+      cover_adjust_contrast: cover_scene?.adjust_contrast ?? 1,
+      cover_adjust_saturation: cover_scene?.adjust_saturation ?? 1,
       view_count: tour_views?.[0]?.count ?? 0,
     };
   });

@@ -34,6 +34,7 @@ import {
   formatViewCount,
   panoramaPublicUrl,
 } from "@/lib/format";
+import { adjustmentFilter } from "@/lib/adjustments";
 import type { TourListItem } from "@/lib/queries/tours";
 
 type TourCardProps = {
@@ -94,6 +95,14 @@ export function TourCard({ tour, priority = false }: TourCardProps) {
                 fill
                 className="object-cover"
                 sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                style={{
+                  filter:
+                    adjustmentFilter({
+                      adjust_brightness: tour.cover_adjust_brightness,
+                      adjust_contrast: tour.cover_adjust_contrast,
+                      adjust_saturation: tour.cover_adjust_saturation,
+                    }) || undefined,
+                }}
                 {...(priority
                   ? { priority: true }
                   : { loading: "lazy" as const })}

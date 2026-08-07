@@ -12,7 +12,11 @@ import {
   sanitizeHotspotColor,
   validateStylePatch,
 } from "@/lib/hotspot-styles";
-import { isNadirType } from "@/lib/nadir";
+import {
+  clampBrightness,
+  clampContrast,
+  clampSaturation,
+} from "@/lib/adjustments";
 import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
 import type { Scene } from "@/types";
@@ -809,5 +813,102 @@ export async function updateSceneNadirDisabled(
   }
 
   revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function updateSceneAdjustments(
+  sceneId: string,
+  input: {
+    adjust_brightness: number;
+    adjust_contrast: number;
+    adjust_saturation: number;
+  },
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const brightness = clampBrightness(input.adjust_brightness);
+  const contrast = clampContrast(input.adjust_contrast);
+  const saturation = clampSaturation(input.adjust_saturation);
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+  if (!scene) {
+    return { error: "Scene not found." };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { error } = await supabase
+    .from("scenes")
+    .update({
+      adjust_brightness: brightness,
+      adjust_contrast: contrast,
+      adjust_saturation: saturation,
+    })
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function copySceneAdjustmentsToTour(
+  tourId: string,
+  sourceSceneId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.tour || !owned.supabase) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { data: source, error: sourceError } = await owned.supabase
+    .from("scenes")
+    .select(
+      "id, tour_id, adjust_brightness, adjust_contrast, adjust_saturation",
+    )
+    .eq("id", sourceSceneId)
+    .maybeSingle();
+
+  if (sourceError) {
+    return { error: sourceError.message };
+  }
+  if (!source || source.tour_id !== tourId) {
+    return { error: "Scene not found." };
+  }
+
+  const { error } = await owned.supabase
+    .from("scenes")
+    .update({
+      adjust_brightness: source.adjust_brightness,
+      adjust_contrast: source.adjust_contrast,
+      adjust_saturation: source.adjust_saturation,
+    })
+    .eq("tour_id", tourId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(tourId, owned.tour.slug);
   return {};
 }

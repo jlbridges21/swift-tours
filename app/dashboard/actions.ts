@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { HEX_COLOR_RE, isHotspotShape } from "@/lib/hotspot-styles";
-import { isNadirType } from "@/lib/nadir";
+import { isNadirLogoSource, isNadirType } from "@/lib/nadir";
 import { generateSlug } from "@/lib/slug";
 import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
@@ -141,9 +141,11 @@ export async function updateTourNadir(
   input: {
     nadir_type?: string;
     nadir_logo_path?: string | null;
+    nadir_logo_source?: string;
     nadir_size?: number;
     nadir_opacity?: number;
     nadir_rotation?: number;
+    nadir_feather?: number;
   },
 ): Promise<ActionResult> {
   const supabase = await createClient();
@@ -158,9 +160,11 @@ export async function updateTourNadir(
   const patch: {
     nadir_type?: string;
     nadir_logo_path?: string | null;
+    nadir_logo_source?: string;
     nadir_size?: number;
     nadir_opacity?: number;
     nadir_rotation?: number;
+    nadir_feather?: number;
   } = {};
 
   if (input.nadir_type !== undefined) {
@@ -171,6 +175,12 @@ export async function updateTourNadir(
   }
   if (input.nadir_logo_path !== undefined) {
     patch.nadir_logo_path = input.nadir_logo_path;
+  }
+  if (input.nadir_logo_source !== undefined) {
+    if (!isNadirLogoSource(input.nadir_logo_source)) {
+      return { error: "Invalid nadir logo source." };
+    }
+    patch.nadir_logo_source = input.nadir_logo_source;
   }
   if (input.nadir_size !== undefined) {
     if (input.nadir_size < 0.1 || input.nadir_size > 1) {
@@ -186,6 +196,12 @@ export async function updateTourNadir(
   }
   if (input.nadir_rotation !== undefined) {
     patch.nadir_rotation = input.nadir_rotation;
+  }
+  if (input.nadir_feather !== undefined) {
+    if (input.nadir_feather < 0 || input.nadir_feather > 1) {
+      return { error: "Nadir feather must be between 0 and 1.0." };
+    }
+    patch.nadir_feather = input.nadir_feather;
   }
 
   if (Object.keys(patch).length === 0) {
@@ -368,9 +384,11 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
     default_hotspot_color: original.default_hotspot_color,
     nadir_type: original.nadir_type,
     nadir_logo_path: original.nadir_logo_path,
+    nadir_logo_source: original.nadir_logo_source,
     nadir_size: original.nadir_size,
     nadir_opacity: original.nadir_opacity,
     nadir_rotation: original.nadir_rotation,
+    nadir_feather: original.nadir_feather,
   });
 
   if ("error" in created) {
@@ -423,6 +441,9 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           file_size: scene.file_size,
           nadir_patch_path: scene.nadir_patch_path,
           nadir_disabled: scene.nadir_disabled,
+          adjust_brightness: scene.adjust_brightness,
+          adjust_contrast: scene.adjust_contrast,
+          adjust_saturation: scene.adjust_saturation,
           position: scene.position,
           initial_yaw: scene.initial_yaw,
           initial_pitch: scene.initial_pitch,

@@ -30,6 +30,10 @@ import {
   resolvePanoramaPath,
 } from "@/lib/gl-capabilities";
 import {
+  adjustmentFilter,
+  PSV_CANVAS_SELECTOR,
+} from "@/lib/adjustments";
+import {
   buildHotspotMarkerHtml,
   clampHotspotSize,
   escapeHtml,
@@ -63,7 +67,13 @@ export type PanoramaViewerScene = Pick<
   | "initial_pitch"
   | "nadir_patch_path"
   | "nadir_disabled"
->;
+  | "adjust_brightness"
+  | "adjust_contrast"
+  | "adjust_saturation"
+> & {
+  /** Client-only blob: URL for instant nadir preview before upload finishes. */
+  nadir_preview_url?: string | null;
+};
 
 export type PanoramaViewerHotspot = Pick<
   Hotspot,
@@ -112,6 +122,11 @@ export type PanoramaViewerProps = {
   closeInfoPopoverNonce?: number;
   /** Floor patch size / opacity / spin — applied at render time. */
   nadirSettings?: PanoramaNadirSettings;
+  /**
+   * When true, temporarily clear the CSS filter (press-and-hold before/after).
+   * Same code path in edit and view — only the editor sets this.
+   */
+  adjustmentsBypassed?: boolean;
   onSceneChange?: (sceneId: string) => void;
   onPanoramaClick?: (payload: PanoramaClickPayload) => void;
   onMarkerSelect?: (hotspotId: string) => void;
@@ -232,15 +247,20 @@ function nadirMarkerForScene(
   scene: PanoramaViewerScene,
   settings: PanoramaNadirSettings | undefined,
 ): MarkerConfig | null {
-  if (
-    !settings ||
-    scene.nadir_disabled ||
-    !scene.nadir_patch_path
-  ) {
-    return null;
-  }
+  if (!settings || scene.nadir_disabled) return null;
+
+  const preview = scene.nadir_preview_url?.trim();
+  const stored = scene.nadir_patch_path;
+  if (!preview && !stored) return null;
+
+  const imageUrl =
+    preview ||
+    (stored!.startsWith("blob:") || stored!.startsWith("http")
+      ? stored!
+      : publicUrl(stored!));
+
   return buildNadirMarkerConfig({
-    imageUrl: publicUrl(scene.nadir_patch_path),
+    imageUrl,
     size: settings.size,
     opacity: settings.opacity,
     rotationDegrees: settings.rotation,
@@ -444,6 +464,7 @@ export function PanoramaViewer({
   ariaLabel,
   closeInfoPopoverNonce = 0,
   nadirSettings,
+  adjustmentsBypassed = false,
   onSceneChange,
   onPanoramaClick,
   onMarkerSelect,
@@ -788,6 +809,41 @@ export function PanoramaViewer({
     selectedHotspotId,
     highlightedHotspotId,
     nadirSettings,
+  ]);
+
+  // Per-scene CSS filter on the WebGL canvas (not the viewer root — markers
+  // live in a sibling `.psv-markers` layer and must stay unfiltered).
+  // Nadir imageLayer is inside the canvas, so it receives the same filter.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !hasScenes) return;
+
+    const canvas = viewer.container.querySelector(
+      PSV_CANVAS_SELECTOR,
+    ) as HTMLCanvasElement | null;
+    if (!canvas) return;
+
+    const sceneId =
+      currentSceneId && scenes.some((scene) => scene.id === currentSceneId)
+        ? currentSceneId
+        : resolveStartId(scenes, startSceneId);
+    const scene = scenes.find((item) => item.id === sceneId);
+    const filter = adjustmentsBypassed
+      ? ""
+      : adjustmentFilter(scene ?? null);
+
+    if (filter) {
+      canvas.style.filter = filter;
+    } else {
+      canvas.style.removeProperty("filter");
+    }
+  }, [
+    hasScenes,
+    scenes,
+    currentSceneId,
+    startSceneId,
+    adjustmentsBypassed,
+    retryNonce,
   ]);
 
   // Edit mode: drag markers to reposition (PSV has no built-in drag).

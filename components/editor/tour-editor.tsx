@@ -12,6 +12,7 @@ import {
   updateSceneInitialView,
   updateTourTitle,
 } from "@/app/dashboard/tours/[id]/actions";
+import { AdjustmentsPanel } from "@/components/editor/adjustments-panel";
 import { HotspotPanel } from "@/components/editor/hotspot-panel";
 import {
   HotspotToolbar,
@@ -21,6 +22,7 @@ import {
 } from "@/components/editor/hotspot-toolbar";
 import {
   NadirSettings,
+  type EditorScene,
   type NadirTourFields,
 } from "@/components/editor/nadir-settings";
 import { SceneSidebar } from "@/components/editor/scene-sidebar";
@@ -88,19 +90,24 @@ function TourEditorInner({
   const { run, status } = useSaveStatus();
   const viewerRef = useRef<Viewer | null>(null);
 
-  const [scenes, setScenes] = useState(initialScenes);
+  const [scenes, setScenes] = useState<EditorScene[]>(initialScenes);
   const [hotspots, setHotspots] = useState(initialHotspots);
   const [title, setTitle] = useState(tour.title);
   const [nadir, setNadir] = useState<NadirTourFields>({
     nadir_type: tour.nadir_type,
     nadir_logo_path: tour.nadir_logo_path,
+    nadir_logo_source:
+      tour.nadir_logo_source ??
+      (tour.nadir_logo_path ? "custom" : "default"),
     nadir_size: tour.nadir_size,
     nadir_opacity: tour.nadir_opacity,
     nadir_rotation: tour.nadir_rotation,
+    nadir_feather: tour.nadir_feather ?? 0.35,
   });
-  const [rightPanel, setRightPanel] = useState<"hotspots" | "nadir">(
-    "hotspots",
-  );
+  const [rightPanel, setRightPanel] = useState<
+    "hotspots" | "nadir" | "adjustments"
+  >("hotspots");
+  const [adjustmentsBypassed, setAdjustmentsBypassed] = useState(false);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(
     initialScenes[0]?.id ?? null,
   );
@@ -131,16 +138,22 @@ function TourEditorInner({
     setNadir({
       nadir_type: tour.nadir_type,
       nadir_logo_path: tour.nadir_logo_path,
+      nadir_logo_source:
+        tour.nadir_logo_source ??
+        (tour.nadir_logo_path ? "custom" : "default"),
       nadir_size: tour.nadir_size,
       nadir_opacity: tour.nadir_opacity,
       nadir_rotation: tour.nadir_rotation,
+      nadir_feather: tour.nadir_feather ?? 0.35,
     });
   }, [
     tour.nadir_type,
     tour.nadir_logo_path,
+    tour.nadir_logo_source,
     tour.nadir_size,
     tour.nadir_opacity,
     tour.nadir_rotation,
+    tour.nadir_feather,
   ]);
 
   useEffect(() => {
@@ -548,11 +561,17 @@ function TourEditorInner({
               onActiveSceneChange={setActiveSceneId}
               nadirType={nadir.nadir_type}
               nadirLogoPath={nadir.nadir_logo_path}
+              nadirLogoSource={nadir.nadir_logo_source}
+              nadirFeather={nadir.nadir_feather}
               onNadirPatchReady={(sceneId, nadirPatchPath) => {
                 setScenes((prev) =>
                   prev.map((scene) =>
                     scene.id === sceneId
-                      ? { ...scene, nadir_patch_path: nadirPatchPath }
+                      ? {
+                          ...scene,
+                          nadir_patch_path: nadirPatchPath,
+                          nadir_preview_url: null,
+                        }
                       : scene,
                   ),
                 );
@@ -592,6 +611,7 @@ function TourEditorInner({
                   opacity: nadir.nadir_opacity,
                   rotation: nadir.nadir_rotation,
                 }}
+                adjustmentsBypassed={adjustmentsBypassed}
                 onInfoPopoverOpenChange={setInfoPopoverOpen}
                 onSceneChange={setActiveSceneId}
                 onMarkerSelect={(id) => {
@@ -652,7 +672,10 @@ function TourEditorInner({
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
-                onClick={() => setRightPanel("hotspots")}
+                onClick={() => {
+                  setAdjustmentsBypassed(false);
+                  setRightPanel("hotspots");
+                }}
               >
                 Hotspots
               </button>
@@ -666,9 +689,26 @@ function TourEditorInner({
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
-                onClick={() => setRightPanel("nadir")}
+                onClick={() => {
+                  setAdjustmentsBypassed(false);
+                  setRightPanel("nadir");
+                }}
               >
-                Nadir patch
+                Nadir
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPanel === "adjustments"}
+                className={cn(
+                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium",
+                  rightPanel === "adjustments"
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setRightPanel("adjustments")}
+              >
+                Adjust
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -677,9 +717,18 @@ function TourEditorInner({
                   tourId={tour.id}
                   userId={userId}
                   scenes={scenes}
+                  activeSceneId={activeSceneId}
                   values={nadir}
                   onChange={setNadir}
                   onScenesChange={setScenes}
+                />
+              ) : rightPanel === "adjustments" ? (
+                <AdjustmentsPanel
+                  tourId={tour.id}
+                  scenes={scenes}
+                  activeSceneId={activeSceneId}
+                  onScenesChange={setScenes}
+                  onHoldUnadjusted={setAdjustmentsBypassed}
                 />
               ) : (
                 <HotspotPanel

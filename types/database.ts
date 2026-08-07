@@ -1,6 +1,6 @@
 /**
  * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql (+ 0002–0006).
+ * supabase/migrations/0001_initial_schema.sql (+ 0002–0008).
  *
  * Overwrite this file after applying migrations:
  *
@@ -34,9 +34,11 @@ export type Database = {
           default_hotspot_color: string;
           nadir_type: string;
           nadir_logo_path: string | null;
+          nadir_logo_source: string;
           nadir_size: number;
           nadir_opacity: number;
           nadir_rotation: number;
+          nadir_feather: number;
           created_at: string;
           updated_at: string;
         };
@@ -53,9 +55,11 @@ export type Database = {
           default_hotspot_color?: string;
           nadir_type?: string;
           nadir_logo_path?: string | null;
+          nadir_logo_source?: string;
           nadir_size?: number;
           nadir_opacity?: number;
           nadir_rotation?: number;
+          nadir_feather?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -72,9 +76,11 @@ export type Database = {
           default_hotspot_color?: string;
           nadir_type?: string;
           nadir_logo_path?: string | null;
+          nadir_logo_source?: string;
           nadir_size?: number;
           nadir_opacity?: number;
           nadir_rotation?: number;
+          nadir_feather?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -108,6 +114,9 @@ export type Database = {
           file_size: number | null;
           nadir_patch_path: string | null;
           nadir_disabled: boolean;
+          adjust_brightness: number;
+          adjust_contrast: number;
+          adjust_saturation: number;
           position: number;
           initial_yaw: number;
           initial_pitch: number;
@@ -125,6 +134,9 @@ export type Database = {
           file_size?: number | null;
           nadir_patch_path?: string | null;
           nadir_disabled?: boolean;
+          adjust_brightness?: number;
+          adjust_contrast?: number;
+          adjust_saturation?: number;
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
@@ -142,6 +154,9 @@ export type Database = {
           file_size?: number | null;
           nadir_patch_path?: string | null;
           nadir_disabled?: boolean;
+          adjust_brightness?: number;
+          adjust_contrast?: number;
+          adjust_saturation?: number;
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
