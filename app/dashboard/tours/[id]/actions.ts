@@ -13,6 +13,14 @@ function editorPath(tourId: string) {
   return `/dashboard/tours/${tourId}/edit`;
 }
 
+function revalidateTourCaches(tourId: string, slug?: string | null) {
+  revalidatePath(editorPath(tourId));
+  revalidatePath("/dashboard");
+  if (slug) {
+    revalidatePath(`/tour/${slug}`);
+  }
+}
+
 async function requireOwnedTour(tourId: string) {
   const supabase = await createClient();
   const {
@@ -30,7 +38,7 @@ async function requireOwnedTour(tourId: string) {
 
   const { data: tour, error } = await supabase
     .from("tours")
-    .select("id, owner_id, cover_scene_id")
+    .select("id, owner_id, cover_scene_id, slug")
     .eq("id", tourId)
     .maybeSingle();
 
@@ -86,8 +94,7 @@ export async function createScene(
     }
   }
 
-  revalidatePath(editorPath(tourId));
-  revalidatePath("/dashboard");
+  revalidateTourCaches(tourId, tour.slug);
   return {};
 }
 
@@ -137,7 +144,7 @@ export async function renameScene(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(scene.tour_id));
+  revalidateTourCaches(scene.tour_id, owned.tour?.slug);
   return {};
 }
 
@@ -218,8 +225,7 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
     }
   }
 
-  revalidatePath(editorPath(scene.tour_id));
-  revalidatePath("/dashboard");
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
   return {};
 }
 
@@ -260,7 +266,7 @@ export async function reorderScenes(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(tourId));
+  revalidateTourCaches(tourId, owned.tour?.slug);
   return {};
 }
 
@@ -309,7 +315,7 @@ export async function updateSceneInitialView(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(scene.tour_id));
+  revalidateTourCaches(scene.tour_id, owned.tour?.slug);
   return {};
 }
 
@@ -336,8 +342,7 @@ export async function updateTourTitle(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(tourId));
-  revalidatePath("/dashboard");
+  revalidateTourCaches(tourId, owned.tour?.slug);
   return {};
 }
 
@@ -409,6 +414,7 @@ async function requireOwnedHotspot(hotspotId: string) {
       supabase,
       hotspot: null,
       scene: null,
+      tour: null,
     };
   }
 
@@ -419,7 +425,13 @@ async function requireOwnedHotspot(hotspotId: string) {
     .maybeSingle();
 
   if (error) {
-    return { error: error.message, supabase, hotspot: null, scene: null };
+    return {
+      error: error.message,
+      supabase,
+      hotspot: null,
+      scene: null,
+      tour: null,
+    };
   }
 
   if (!hotspot) {
@@ -428,6 +440,7 @@ async function requireOwnedHotspot(hotspotId: string) {
       supabase,
       hotspot: null,
       scene: null,
+      tour: null,
     };
   }
 
@@ -438,10 +451,17 @@ async function requireOwnedHotspot(hotspotId: string) {
       supabase,
       hotspot: null,
       scene: null,
+      tour: null,
     };
   }
 
-  return { error: null, supabase, hotspot, scene: owned.scene };
+  return {
+    error: null,
+    supabase,
+    hotspot,
+    scene: owned.scene,
+    tour: owned.tour,
+  };
 }
 
 export async function createHotspot(
@@ -485,7 +505,7 @@ export async function createHotspot(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(owned.scene.tour_id));
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
   return {};
 }
 
@@ -536,7 +556,7 @@ export async function updateHotspot(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(owned.scene.tour_id));
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
   return {};
 }
 
@@ -557,6 +577,6 @@ export async function deleteHotspot(
     return { error: error.message };
   }
 
-  revalidatePath(editorPath(owned.scene.tour_id));
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
   return {};
 }

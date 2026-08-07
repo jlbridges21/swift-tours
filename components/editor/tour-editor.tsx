@@ -411,7 +411,15 @@ function TourEditorInner({
             size="sm"
             nativeButton={false}
             render={
-              <a href={`/tour/${tour.slug}`} target="_blank" rel="noreferrer" />
+              <a
+                href={
+                  tour.is_public
+                    ? `/tour/${tour.slug}`
+                    : `/dashboard/tours/${tour.id}/preview`
+                }
+                target="_blank"
+                rel="noreferrer"
+              />
             }
           >
             Preview

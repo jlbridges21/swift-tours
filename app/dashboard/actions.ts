@@ -88,14 +88,16 @@ export async function updateTour(
     return { error: "Title is required." };
   }
 
-  const { error } = await supabase
+  const { data: tour, error } = await supabase
     .from("tours")
     .update({
       title,
       description: input.description,
       is_public: input.is_public,
     })
-    .eq("id", id);
+    .eq("id", id)
+    .select("slug")
+    .maybeSingle();
 
   if (error) {
     return { error: error.message };
@@ -103,6 +105,9 @@ export async function updateTour(
 
   revalidatePath("/dashboard");
   revalidatePath(`/dashboard/tours/${id}/edit`);
+  if (tour?.slug) {
+    revalidatePath(`/tour/${tour.slug}`);
+  }
   return {};
 }
 
@@ -116,6 +121,12 @@ export async function deleteTour(id: string): Promise<ActionResult> {
     return { error: "You must be signed in to delete a tour." };
   }
 
+  const { data: existing } = await supabase
+    .from("tours")
+    .select("slug")
+    .eq("id", id)
+    .maybeSingle();
+
   const { error } = await supabase.from("tours").delete().eq("id", id);
 
   if (error) {
@@ -123,6 +134,9 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   }
 
   revalidatePath("/dashboard");
+  if (existing?.slug) {
+    revalidatePath(`/tour/${existing.slug}`);
+  }
   return {};
 }
 
