@@ -42,7 +42,7 @@ export default async function EmbedTourPage({ params }: PageProps) {
     notFound();
   }
 
-  const { tour, scenes, groups, floorPlans, hotspots } = payload;
+  const { tour, scenes, groups, floorPlans, hotspots, hotspotImages } = payload;
 
   return (
     <Suspense
@@ -53,6 +53,7 @@ export default async function EmbedTourPage({ params }: PageProps) {
           groups={groups}
           floorPlans={floorPlans}
           hotspots={hotspots}
+          hotspotImages={hotspotImages}
           trackViews
           embedMode
         />
@@ -64,6 +65,7 @@ export default async function EmbedTourPage({ params }: PageProps) {
         groups={groups}
         floorPlans={floorPlans}
         hotspots={hotspots}
+        hotspotImages={hotspotImages}
       />
     </Suspense>
   );

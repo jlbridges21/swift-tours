@@ -77,7 +77,7 @@ export default async function PublicTourPage({ params }: PageProps) {
     notFound();
   }
 
-  const { tour, scenes, groups, floorPlans, hotspots } = payload;
+  const { tour, scenes, groups, floorPlans, hotspots, hotspotImages } = payload;
 
   return (
     <TourViewerShell
@@ -86,6 +86,7 @@ export default async function PublicTourPage({ params }: PageProps) {
       groups={groups}
       floorPlans={floorPlans}
       hotspots={hotspots}
+      hotspotImages={hotspotImages}
       trackViews
       showShare
     />

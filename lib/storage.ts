@@ -57,6 +57,34 @@ export function floorPlanPath(
   return `${userId}/${tourId}/plans/${planId}${ext}`;
 }
 
+/** Gallery full-size JPEG under the tour folder. */
+export function galleryPath(
+  userId: string,
+  tourId: string,
+  imageId: string,
+): string {
+  return `${userId}/${tourId}/gallery/${imageId}.jpg`;
+}
+
+/** Gallery thumbnail JPEG. */
+export function galleryThumbPath(
+  userId: string,
+  tourId: string,
+  imageId: string,
+): string {
+  return `${userId}/${tourId}/gallery/${imageId}_thumb.jpg`;
+}
+
+/** Collect storage objects for a gallery slide. */
+export function galleryImageObjectPaths(image: {
+  storage_path: string;
+  thumbnail_path?: string | null;
+}): string[] {
+  const paths = [image.storage_path];
+  if (image.thumbnail_path) paths.push(image.thumbnail_path);
+  return paths;
+}
+
 /** Custom branding logo under the user's folder (RLS-safe). */
 export function brandingLogoPath(
   userId: string,

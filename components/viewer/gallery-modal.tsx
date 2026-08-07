@@ -18,15 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
-
-/** Local shape for gallery slides (table may arrive in a later migration). */
-type HotspotImage = {
-  id: string;
-  storage_path: string;
-  thumbnail_path?: string | null;
-  position: number;
-  caption?: string | null;
-};
+import type { HotspotImage } from "@/types";
 
 type GalleryModalProps = {
   open: boolean;
@@ -44,10 +36,17 @@ export function GalleryModal({
   const ordered = [...images].sort((a, b) => a.position - b.position);
   const [index, setIndex] = useState(0);
   const touchStartX = useRef<number | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (open) setIndex(0);
   }, [open, ordered.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const id = window.setTimeout(() => closeRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+  }, [open]);
 
   const current = ordered[index] ?? null;
   const multi = ordered.length > 1;
@@ -75,7 +74,7 @@ export function GalleryModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, go]);
 
-  // Preload adjacent
+  // Preload adjacent full-size images.
   useEffect(() => {
     if (!open || !multi) return;
     const prev = ordered[(index - 1 + ordered.length) % ordered.length];
@@ -105,7 +104,7 @@ export function GalleryModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 rounded-none border-0 bg-black p-0 text-white sm:h-auto sm:max-h-[90vh] sm:max-w-4xl sm:rounded-xl sm:ring-1 sm:ring-white/15"
+        className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 rounded-none border-0 bg-black p-0 text-white max-[639px]:rounded-none sm:h-auto sm:max-h-[90vh] sm:max-w-4xl sm:rounded-xl sm:ring-1 sm:ring-white/15"
       >
         <div className="flex items-center justify-between gap-3 px-3 py-2 sm:px-4">
           <DialogTitle className="truncate text-sm font-medium text-white">
@@ -115,6 +114,7 @@ export function GalleryModal({
             Image gallery
           </DialogDescription>
           <Button
+            ref={closeRef}
             type="button"
             variant="ghost"
             size="icon-sm"

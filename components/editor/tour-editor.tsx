@@ -41,21 +41,32 @@ import {
 import { EmbedDialog } from "@/components/tours/embed-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { GalleryModal } from "@/components/viewer/gallery-modal";
 import {
   PanoramaViewer,
   type PanoramaClickPayload,
 } from "@/components/viewer/panorama-viewer-client";
+import { VideoModal } from "@/components/viewer/video-modal";
 import {
   DEFAULT_ANIMATION,
+  DEFAULT_GALLERY_SHAPE,
   DEFAULT_INFO_SHAPE,
   DEFAULT_LABEL_VISIBILITY,
   DEFAULT_SIZE,
+  DEFAULT_VIDEO_SHAPE,
   isHotspotShape,
   sanitizeHotspotColor,
 } from "@/lib/hotspot-styles";
 import { isNadirMarkerId } from "@/lib/nadir";
 import { cn } from "@/lib/utils";
-import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type {
+  FloorPlan,
+  Hotspot,
+  HotspotImage,
+  Scene,
+  SceneGroup,
+  Tour,
+} from "@/types";
 
 type TourEditorProps = {
   tour: Tour;
@@ -63,6 +74,7 @@ type TourEditorProps = {
   groups: SceneGroup[];
   floorPlans: FloorPlan[];
   hotspots: Hotspot[];
+  hotspotImages: HotspotImage[];
   userId: string;
 };
 
@@ -96,6 +108,7 @@ function TourEditorInner({
   groups: initialGroups,
   floorPlans: initialFloorPlans,
   hotspots: initialHotspots,
+  hotspotImages: initialHotspotImages,
   userId,
 }: TourEditorProps) {
   const { run, status } = useSaveStatus();
@@ -105,6 +118,7 @@ function TourEditorInner({
   const [groups, setGroups] = useState(initialGroups);
   const [floorPlans, setFloorPlans] = useState(initialFloorPlans);
   const [hotspots, setHotspots] = useState(initialHotspots);
+  const [hotspotImages, setHotspotImages] = useState(initialHotspotImages);
   const [title, setTitle] = useState(tour.title);
   const [nadir, setNadir] = useState<NadirTourFields>({
     nadir_type: tour.nadir_type,
@@ -138,6 +152,8 @@ function TourEditorInner({
   const [embedOpen, setEmbedOpen] = useState(false);
   const [infoPopoverOpen, setInfoPopoverOpen] = useState(false);
   const [closeInfoPopoverNonce, setCloseInfoPopoverNonce] = useState(0);
+  const [galleryPreviewId, setGalleryPreviewId] = useState<string | null>(null);
+  const [videoPreviewId, setVideoPreviewId] = useState<string | null>(null);
 
   useEffect(() => {
     setScenes(initialScenes);
@@ -146,6 +162,10 @@ function TourEditorInner({
   useEffect(() => {
     setHotspots(initialHotspots);
   }, [initialHotspots]);
+
+  useEffect(() => {
+    setHotspotImages(initialHotspotImages);
+  }, [initialHotspotImages]);
 
   useEffect(() => {
     setTitle(tour.title);
@@ -200,7 +220,7 @@ function TourEditorInner({
     setPlacingType(null);
   }, [activeSceneId]);
 
-  // Escape: cancel placing → close popover → deselect.
+  // Escape: cancel placing → close media modal → close popover → deselect.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
@@ -209,6 +229,12 @@ function TourEditorInner({
       if (placingType) {
         event.preventDefault();
         setPlacingType(null);
+        return;
+      }
+      if (galleryPreviewId || videoPreviewId) {
+        event.preventDefault();
+        setGalleryPreviewId(null);
+        setVideoPreviewId(null);
         return;
       }
       if (infoPopoverOpen) {
@@ -224,7 +250,13 @@ function TourEditorInner({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [placingType, infoPopoverOpen, selectedHotspotId]);
+  }, [
+    placingType,
+    galleryPreviewId,
+    videoPreviewId,
+    infoPopoverOpen,
+    selectedHotspotId,
+  ]);
 
   const activeScene = useMemo(
     () => scenes.find((scene) => scene.id === activeSceneId) ?? null,
@@ -337,8 +369,12 @@ function TourEditorInner({
         return;
       }
       await createLinkHotspotAt(yaw, pitch, other.id, autoReturnLink);
-    } else {
-      await createInfoHotspotAt(yaw, pitch);
+    } else if (type === "info") {
+      await createTypedHotspotAt("info", yaw, pitch, DEFAULT_INFO_SHAPE);
+    } else if (type === "gallery") {
+      await createTypedHotspotAt("gallery", yaw, pitch, DEFAULT_GALLERY_SHAPE);
+    } else if (type === "video") {
+      await createTypedHotspotAt("video", yaw, pitch, DEFAULT_VIDEO_SHAPE);
     }
 
     setPlacingType(null);
@@ -371,6 +407,8 @@ function TourEditorInner({
       style_size: DEFAULT_SIZE,
       style_animation: DEFAULT_ANIMATION,
       label_visibility: DEFAULT_LABEL_VISIBILITY,
+      video_id: null,
+      video_start: null,
       created_at: new Date().toISOString(),
     };
 
@@ -392,6 +430,8 @@ function TourEditorInner({
         style_size: DEFAULT_SIZE,
         style_animation: DEFAULT_ANIMATION,
         label_visibility: DEFAULT_LABEL_VISIBILITY,
+        video_id: null,
+        video_start: null,
         created_at: new Date().toISOString(),
       };
       created.push(returnHotspot);
@@ -440,7 +480,12 @@ function TourEditorInner({
     }
   }
 
-  async function createInfoHotspotAt(yaw: number, pitch: number) {
+  async function createTypedHotspotAt(
+    type: "info" | "gallery" | "video",
+    yaw: number,
+    pitch: number,
+    styleShape: string,
+  ) {
     if (!activeSceneId) return;
 
     const id = crypto.randomUUID();
@@ -448,27 +493,30 @@ function TourEditorInner({
       id,
       scene_id: activeSceneId,
       target_scene_id: null,
-      type: "info",
+      type,
       yaw,
       pitch,
       label: null,
       content: null,
-      style_shape: DEFAULT_INFO_SHAPE,
+      style_shape: styleShape,
       style_color: sanitizeHotspotColor(tour.default_hotspot_color),
       style_size: DEFAULT_SIZE,
       style_animation: DEFAULT_ANIMATION,
       label_visibility: DEFAULT_LABEL_VISIBILITY,
+      video_id: null,
+      video_start: null,
       created_at: new Date().toISOString(),
     };
 
     const previous = hotspots;
     setHotspots([...hotspots, hotspot]);
     setSelectedHotspotId(id);
+    setRightPanel("hotspots");
 
     const ok = await run(() =>
       createHotspot(activeSceneId, {
         id,
-        type: "info",
+        type,
         yaw: hotspot.yaw,
         pitch: hotspot.pitch,
         label: hotspot.label,
@@ -479,7 +527,7 @@ function TourEditorInner({
     if (!ok) {
       setHotspots(previous);
       setSelectedHotspotId(null);
-      toast.error("Could not create info hotspot");
+      toast.error(`Could not create ${type} hotspot`);
     }
   }
 
@@ -824,19 +872,52 @@ function TourEditorInner({
               ) : (
                 <HotspotPanel
                   tourId={tour.id}
+                  userId={userId}
                   scenes={scenes}
                   hotspots={hotspots}
+                  hotspotImages={hotspotImages}
                   activeSceneId={activeSceneId}
                   selectedHotspotId={selectedHotspotId}
                   onSelect={setSelectedHotspotId}
                   onHotspotsChange={setHotspots}
+                  onHotspotImagesChange={setHotspotImages}
                   onFaceHotspot={faceHotspot}
+                  onPreviewGallery={setGalleryPreviewId}
+                  onPreviewVideo={setVideoPreviewId}
                 />
               )}
             </div>
           </div>
         </div>
       </div>
+
+      <GalleryModal
+        open={
+          galleryPreviewId != null &&
+          hotspotImages.some((img) => img.hotspot_id === galleryPreviewId)
+        }
+        onOpenChange={(open) => {
+          if (!open) setGalleryPreviewId(null);
+        }}
+        images={hotspotImages.filter(
+          (img) => img.hotspot_id === galleryPreviewId,
+        )}
+        title={
+          hotspots.find((h) => h.id === galleryPreviewId)?.label ?? "Gallery"
+        }
+      />
+      <VideoModal
+        open={
+          videoPreviewId != null &&
+          Boolean(hotspots.find((h) => h.id === videoPreviewId)?.video_id)
+        }
+        onOpenChange={(open) => {
+          if (!open) setVideoPreviewId(null);
+        }}
+        videoId={hotspots.find((h) => h.id === videoPreviewId)?.video_id}
+        start={hotspots.find((h) => h.id === videoPreviewId)?.video_start}
+        title={hotspots.find((h) => h.id === videoPreviewId)?.label}
+      />
 
       <EmbedDialog
         tour={tour}

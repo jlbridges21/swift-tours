@@ -1,6 +1,13 @@
 "use client";
 
-import { ChevronLeftIcon, InfoIcon, Link2Icon, Trash2Icon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ImagesIcon,
+  InfoIcon,
+  Link2Icon,
+  PlayIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -10,6 +17,7 @@ import {
   deleteHotspot,
   updateHotspot,
 } from "@/app/dashboard/tours/[id]/actions";
+import { GalleryHotspotEditor } from "@/components/editor/gallery-hotspot-editor";
 import { useSaveStatus } from "@/components/editor/save-status";
 import {
   AlertDialog,
@@ -38,18 +46,27 @@ import {
   type HotspotShape,
   type LabelVisibility,
 } from "@/lib/hotspot-styles";
+import {
+  parseYouTubeInput,
+  youtubeThumbnailUrl,
+} from "@/lib/youtube";
 import { cn } from "@/lib/utils";
-import type { Hotspot, Scene } from "@/types";
+import type { Hotspot, HotspotImage, Scene } from "@/types";
 
 type HotspotPanelProps = {
   tourId: string;
+  userId: string;
   scenes: Scene[];
   hotspots: Hotspot[];
+  hotspotImages: HotspotImage[];
   activeSceneId: string | null;
   selectedHotspotId: string | null;
   onSelect: (hotspotId: string | null) => void;
   onHotspotsChange: (hotspots: Hotspot[]) => void;
+  onHotspotImagesChange: (images: HotspotImage[]) => void;
   onFaceHotspot: (hotspot: Hotspot) => void;
+  onPreviewGallery: (hotspotId: string) => void;
+  onPreviewVideo: (hotspotId: string) => void;
 };
 
 function normalizeYaw(yaw: number): number {
@@ -70,13 +87,18 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 export function HotspotPanel({
   tourId,
+  userId,
   scenes,
   hotspots,
+  hotspotImages,
   activeSceneId,
   selectedHotspotId,
   onSelect,
   onHotspotsChange,
+  onHotspotImagesChange,
   onFaceHotspot,
+  onPreviewGallery,
+  onPreviewVideo,
 }: HotspotPanelProps) {
   const { run } = useSaveStatus();
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -100,7 +122,11 @@ export function HotspotPanel({
 
   async function handleDelete(hotspotId: string) {
     const previous = hotspots;
+    const previousImages = hotspotImages;
     onHotspotsChange(hotspots.filter((hotspot) => hotspot.id !== hotspotId));
+    onHotspotImagesChange(
+      hotspotImages.filter((image) => image.hotspot_id !== hotspotId),
+    );
     if (selectedHotspotId === hotspotId) {
       onSelect(null);
     }
@@ -110,6 +136,7 @@ export function HotspotPanel({
     setDeleting(false);
     if (!ok) {
       onHotspotsChange(previous);
+      onHotspotImagesChange(previousImages);
       toast.error("Could not delete hotspot");
       return;
     }
@@ -158,11 +185,16 @@ export function HotspotPanel({
           <HotspotEditor
             key={editing.id}
             tourId={tourId}
+            userId={userId}
             hotspot={editing}
             scenes={scenes}
             onHotspotsChange={onHotspotsChange}
             allHotspots={hotspots}
+            hotspotImages={hotspotImages}
+            onHotspotImagesChange={onHotspotImagesChange}
             onRequestDelete={() => setDeleteId(editing.id)}
+            onPreviewGallery={() => onPreviewGallery(editing.id)}
+            onPreviewVideo={() => onPreviewVideo(editing.id)}
           />
         ) : !activeSceneId ? (
           <p className="px-2 py-6 text-center text-sm text-muted-foreground">
@@ -172,18 +204,33 @@ export function HotspotPanel({
           <div className="flex flex-col gap-2 px-2 py-6 text-center">
             <p className="text-sm font-medium">No hotspots yet</p>
             <p className="text-sm text-muted-foreground">
-              Use Add link or Add info in the toolbar, then click the panorama to
-              place one. Drag a marker to move it.
+              Use the toolbar to add a link, info, gallery, or video hotspot,
+              then click the panorama to place it. Drag a marker to move it.
             </p>
           </div>
         ) : (
           <ul className="flex flex-col gap-1">
             {sceneHotspots.map((hotspot) => {
+              const imageCount = hotspotImages.filter(
+                (img) => img.hotspot_id === hotspot.id,
+              ).length;
               const title =
                 hotspot.label?.trim() ||
                 (hotspot.type === "link"
                   ? `→ ${sceneName(hotspot.target_scene_id)}`
-                  : "Info hotspot");
+                  : hotspot.type === "gallery"
+                    ? "Gallery"
+                    : hotspot.type === "video"
+                      ? "Video"
+                      : "Info hotspot");
+              const summary =
+                hotspot.type === "gallery"
+                  ? `${imageCount} image${imageCount === 1 ? "" : "s"}`
+                  : hotspot.type === "video"
+                    ? hotspot.video_id
+                      ? "YouTube video"
+                      : "No video yet"
+                    : null;
 
               return (
                 <li key={hotspot.id}>
@@ -198,10 +245,21 @@ export function HotspotPanel({
                     >
                       {hotspot.type === "link" ? (
                         <Link2Icon className="size-4 shrink-0 text-blue-600" />
+                      ) : hotspot.type === "gallery" ? (
+                        <ImagesIcon className="size-4 shrink-0 text-emerald-600" />
+                      ) : hotspot.type === "video" ? (
+                        <PlayIcon className="size-4 shrink-0 text-red-600" />
                       ) : (
                         <InfoIcon className="size-4 shrink-0 text-muted-foreground" />
                       )}
-                      <span className="min-w-0 flex-1 truncate">{title}</span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {title}
+                        {summary ? (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            · {summary}
+                          </span>
+                        ) : null}
+                      </span>
                     </button>
                     <Button
                       type="button"
@@ -253,26 +311,41 @@ export function HotspotPanel({
 
 type HotspotEditorProps = {
   tourId: string;
+  userId: string;
   hotspot: Hotspot;
   scenes: Scene[];
   allHotspots: Hotspot[];
+  hotspotImages: HotspotImage[];
   onHotspotsChange: (hotspots: Hotspot[]) => void;
+  onHotspotImagesChange: (images: HotspotImage[]) => void;
   onRequestDelete: () => void;
+  onPreviewGallery: () => void;
+  onPreviewVideo: () => void;
 };
 
 function HotspotEditor({
   tourId,
+  userId,
   hotspot,
   scenes,
   allHotspots,
+  hotspotImages,
   onHotspotsChange,
+  onHotspotImagesChange,
   onRequestDelete,
+  onPreviewGallery,
+  onPreviewVideo,
 }: HotspotEditorProps) {
   const { run } = useSaveStatus();
   const [label, setLabel] = useState(hotspot.label ?? "");
   const [content, setContent] = useState(hotspot.content ?? "");
   const [targetSceneId, setTargetSceneId] = useState(
     hotspot.target_scene_id ?? "",
+  );
+  const [videoUrl, setVideoUrl] = useState(hotspot.video_id ?? "");
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [videoStart, setVideoStart] = useState(
+    hotspot.video_start != null ? String(hotspot.video_start) : "",
   );
   const [shape, setShape] = useState<HotspotShape>(
     (hotspot.style_shape as HotspotShape) || "arrow",
@@ -290,6 +363,15 @@ function HotspotEditor({
   const [addingReturn, setAddingReturn] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const styleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const galleryImages = useMemo(
+    () => hotspotImages.filter((img) => img.hotspot_id === hotspot.id),
+    [hotspotImages, hotspot.id],
+  );
+
+  const videoThumb = hotspot.video_id
+    ? youtubeThumbnailUrl(hotspot.video_id)
+    : null;
 
   const otherScenes = useMemo(
     () => scenes.filter((scene) => scene.id !== hotspot.scene_id),
@@ -310,6 +392,11 @@ function HotspotEditor({
     setLabel(hotspot.label ?? "");
     setContent(hotspot.content ?? "");
     setTargetSceneId(hotspot.target_scene_id ?? "");
+    setVideoUrl(hotspot.video_id ?? "");
+    setVideoError(null);
+    setVideoStart(
+      hotspot.video_start != null ? String(hotspot.video_start) : "",
+    );
     setShape((hotspot.style_shape as HotspotShape) || "arrow");
     setColor(sanitizeHotspotColor(hotspot.style_color));
     setSize(clampHotspotSize(hotspot.style_size));
@@ -322,6 +409,8 @@ function HotspotEditor({
     hotspot.label,
     hotspot.content,
     hotspot.target_scene_id,
+    hotspot.video_id,
+    hotspot.video_start,
     hotspot.style_shape,
     hotspot.style_color,
     hotspot.style_size,
@@ -403,6 +492,8 @@ function HotspotEditor({
       style_size: hotspot.style_size,
       style_animation: hotspot.style_animation,
       label_visibility: hotspot.label_visibility,
+      video_id: null,
+      video_start: null,
       created_at: new Date().toISOString(),
     };
     const previous = allHotspots;
@@ -453,10 +544,74 @@ function HotspotEditor({
     toast.success("Style applied to all hotspots");
   }
 
+  async function saveVideoFromInput(raw: string) {
+    const parsed = parseYouTubeInput(raw);
+    if (!parsed) {
+      setVideoError("Paste a YouTube URL or 11-character video id.");
+      return;
+    }
+    setVideoError(null);
+    setVideoUrl(parsed.id);
+    const previous = allHotspots;
+    const nextStart =
+      parsed.start != null
+        ? parsed.start
+        : hotspot.video_start;
+    if (parsed.start != null) {
+      setVideoStart(String(parsed.start));
+    }
+    patchLocal({
+      video_id: parsed.id,
+      video_start: nextStart,
+    });
+    const ok = await run(() =>
+      updateHotspot(hotspot.id, {
+        video_id: parsed.id,
+        video_start: nextStart,
+      }),
+    );
+    if (!ok) {
+      onHotspotsChange(previous);
+      toast.error("Could not save video");
+    }
+  }
+
+  async function saveVideoStart(raw: string) {
+    const trimmed = raw.trim();
+    const value =
+      trimmed === ""
+        ? null
+        : Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0
+          ? Math.floor(Number(trimmed))
+          : null;
+    if (trimmed !== "" && value === null) {
+      toast.error("Start time must be a number of seconds.");
+      return;
+    }
+    const previous = allHotspots;
+    patchLocal({ video_start: value });
+    const ok = await run(() =>
+      updateHotspot(hotspot.id, { video_start: value }),
+    );
+    if (!ok) {
+      onHotspotsChange(previous);
+      toast.error("Could not save start time");
+    }
+  }
+
+  const typeLabel =
+    hotspot.type === "link"
+      ? "link"
+      : hotspot.type === "gallery"
+        ? "gallery"
+        : hotspot.type === "video"
+          ? "video"
+          : "info";
+
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs font-medium text-muted-foreground uppercase">
-        Edit {hotspot.type === "link" ? "link" : "info"}
+        Edit {typeLabel}
       </p>
 
       {hotspot.type === "link" ? (
@@ -509,6 +664,97 @@ function HotspotEditor({
               scheduleTextSave({ content: value });
             }}
           />
+        </div>
+      ) : null}
+
+      {hotspot.type === "gallery" ? (
+        <GalleryHotspotEditor
+          tourId={tourId}
+          userId={userId}
+          hotspotId={hotspot.id}
+          images={galleryImages}
+          onImagesChange={(nextForHotspot) => {
+            const others = hotspotImages.filter(
+              (img) => img.hotspot_id !== hotspot.id,
+            );
+            onHotspotImagesChange([...others, ...nextForHotspot]);
+          }}
+          onPreview={onPreviewGallery}
+        />
+      ) : null}
+
+      {hotspot.type === "video" ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor={`video-${hotspot.id}`}>YouTube URL or id</Label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!hotspot.video_id}
+              onClick={onPreviewVideo}
+            >
+              Preview
+            </Button>
+          </div>
+          <Input
+            id={`video-${hotspot.id}`}
+            value={videoUrl}
+            placeholder="https://youtu.be/… or video id"
+            onChange={(event) => {
+              setVideoUrl(event.target.value);
+              setVideoError(null);
+            }}
+            onBlur={() => {
+              if (videoUrl.trim() && videoUrl.trim() !== (hotspot.video_id ?? "")) {
+                void saveVideoFromInput(videoUrl);
+              }
+            }}
+            onPaste={(event) => {
+              const text = event.clipboardData.getData("text");
+              if (text) {
+                event.preventDefault();
+                setVideoUrl(text);
+                void saveVideoFromInput(text);
+              }
+            }}
+          />
+          {videoError ? (
+            <p className="text-xs text-destructive">{videoError}</p>
+          ) : null}
+          {hotspot.video_id ? (
+            <div className="flex items-center gap-3 rounded-md border p-2">
+              {videoThumb ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={videoThumb}
+                  alt=""
+                  className="h-14 w-24 rounded object-cover"
+                />
+              ) : null}
+              <div className="min-w-0 text-xs">
+                <p className="font-medium">Saved id</p>
+                <p className="truncate font-mono text-muted-foreground">
+                  {hotspot.video_id}
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`vstart-${hotspot.id}`}>
+              Start time (seconds, optional)
+            </Label>
+            <Input
+              id={`vstart-${hotspot.id}`}
+              inputMode="numeric"
+              value={videoStart}
+              placeholder="0"
+              onChange={(event) => setVideoStart(event.target.value)}
+              onBlur={() => {
+                void saveVideoStart(videoStart);
+              }}
+            />
+          </div>
         </div>
       ) : null}
 

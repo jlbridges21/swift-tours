@@ -1,6 +1,13 @@
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { createPublicClient } from "@/lib/supabase/public";
-import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type {
+  FloorPlan,
+  Hotspot,
+  HotspotImage,
+  Scene,
+  SceneGroup,
+  Tour,
+} from "@/types";
 
 export type PublicTourPayload = {
   tour: Tour;
@@ -8,12 +15,17 @@ export type PublicTourPayload = {
   groups: SceneGroup[];
   floorPlans: FloorPlan[];
   hotspots: Hotspot[];
+  hotspotImages: HotspotImage[];
 };
 
 type TourWithNested = Tour & {
   scenes:
     | (Scene & {
-        hotspots: Hotspot[] | null;
+        hotspots:
+          | (Hotspot & {
+              hotspot_images: HotspotImage[] | null;
+            })[]
+          | null;
       })[]
     | null;
   scene_groups: SceneGroup[] | null;
@@ -32,7 +44,10 @@ export async function getPublicTourBySlug(
       *,
       scenes!scenes_tour_id_fkey (
         *,
-        hotspots!hotspots_scene_id_fkey (*)
+        hotspots!hotspots_scene_id_fkey (
+          *,
+          hotspot_images (*)
+        )
       ),
       scene_groups (*),
       floor_plans (*)
@@ -61,7 +76,14 @@ export async function getPublicTourBySlug(
   );
   const rawScenes = (row.scenes ?? []).map(({ hotspots: _h, ...scene }) => scene);
   const scenes = sortScenesByGroupOrder(rawScenes, groups);
-  const hotspots = (row.scenes ?? []).flatMap((scene) => scene.hotspots ?? []);
+  const hotspots = (row.scenes ?? []).flatMap((scene) =>
+    (scene.hotspots ?? []).map(
+      ({ hotspot_images: _imgs, ...hotspot }) => hotspot,
+    ),
+  );
+  const hotspotImages = (row.scenes ?? []).flatMap((scene) =>
+    (scene.hotspots ?? []).flatMap((hotspot) => hotspot.hotspot_images ?? []),
+  );
 
   const {
     scenes: _scenes,
@@ -76,5 +98,6 @@ export async function getPublicTourBySlug(
     groups,
     floorPlans,
     hotspots,
+    hotspotImages,
   };
 }

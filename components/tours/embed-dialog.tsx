@@ -405,7 +405,7 @@ export function EmbedDialog({
                     title="Embed preview"
                     src={previewSrc}
                     className="absolute inset-0 size-full border-0"
-                    allow="fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
+                    allow="fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking; autoplay; encrypted-media; picture-in-picture"
                     allowFullScreen
                   />
                 </div>

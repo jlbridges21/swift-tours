@@ -140,13 +140,13 @@ export function buildFixedIframeSnippet(
   width: number,
   height: number,
 ): string {
-  return `<iframe src="${src}" width="${width}" height="${height}" frameborder="0" allowfullscreen allow="fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"></iframe>`;
+  return `<iframe src="${src}" width="${width}" height="${height}" frameborder="0" allowfullscreen allow="fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking; autoplay; encrypted-media; picture-in-picture"></iframe>`;
 }
 
 /** Responsive 16:9 wrapper with inline styles (no host CSS required). */
 export function buildResponsiveIframeSnippet(src: string): string {
   return `<div style="position:relative;width:100%;height:0;padding-top:56.25%;overflow:hidden;">
-  <iframe src="${src}" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" frameborder="0" allowfullscreen allow="fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"></iframe>
+  <iframe src="${src}" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" frameborder="0" allowfullscreen allow="fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking; autoplay; encrypted-media; picture-in-picture"></iframe>
 </div>`;
 }
 

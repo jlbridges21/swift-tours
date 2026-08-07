@@ -13,6 +13,8 @@ export const HOTSPOT_SHAPES = [
   "plus",
   "pulse-dot",
   "label",
+  "gallery",
+  "video",
 ] as const;
 
 export type HotspotShape = (typeof HOTSPOT_SHAPES)[number];
@@ -38,10 +40,38 @@ export const PRESET_COLORS = [
 
 export const DEFAULT_LINK_SHAPE: HotspotShape = "arrow";
 export const DEFAULT_INFO_SHAPE: HotspotShape = "info";
+export const DEFAULT_GALLERY_SHAPE: HotspotShape = "gallery";
+export const DEFAULT_VIDEO_SHAPE: HotspotShape = "video";
 export const DEFAULT_COLOR = "#FFFFFF";
 export const DEFAULT_SIZE = 48;
 export const DEFAULT_ANIMATION: HotspotAnimation = "pulse";
 export const DEFAULT_LABEL_VISIBILITY: LabelVisibility = "hover";
+
+export type HotspotType = "link" | "info" | "gallery" | "video";
+
+export function isHotspotType(value: string): value is HotspotType {
+  return (
+    value === "link" ||
+    value === "info" ||
+    value === "gallery" ||
+    value === "video"
+  );
+}
+
+/** Default marker shape for a newly created hotspot of this type. */
+export function defaultShapeForHotspotType(type: HotspotType): HotspotShape {
+  switch (type) {
+    case "info":
+      return DEFAULT_INFO_SHAPE;
+    case "gallery":
+      return DEFAULT_GALLERY_SHAPE;
+    case "video":
+      return DEFAULT_VIDEO_SHAPE;
+    case "link":
+    default:
+      return DEFAULT_LINK_SHAPE;
+  }
+}
 
 export function isHotspotShape(value: string): value is HotspotShape {
   return (HOTSPOT_SHAPES as readonly string[]).includes(value);
@@ -226,6 +256,32 @@ const builders: Record<HotspotShape, ShapeBuilder> = {
       ),
     ),
 
+  gallery: ({ color, size, animation, selected }) =>
+    wrapMarker(
+      size,
+      animation,
+      selected,
+      svgShell(
+        size,
+        `<rect x="10" y="14" width="28" height="22" rx="3" fill="${color}" stroke="rgba(0,0,0,0.35)" stroke-width="1.5"/>
+         <rect x="14" y="10" width="24" height="18" rx="2" fill="${color}" opacity="0.55" stroke="rgba(0,0,0,0.25)" stroke-width="1"/>
+         <circle cx="18" cy="20" r="2.5" fill="#111111"/>
+         <path d="M12 32 L20 24 L25 28 L30 22 L36 32 Z" fill="#111111" opacity="0.85"/>`,
+      ),
+    ),
+
+  video: ({ color, size, animation, selected }) =>
+    wrapMarker(
+      size,
+      animation,
+      selected,
+      svgShell(
+        size,
+        `<circle cx="24" cy="24" r="16" fill="${color}" stroke="rgba(0,0,0,0.35)" stroke-width="1.5"/>
+         <path d="M20 16 L34 24 L20 32 Z" fill="#111111"/>`,
+      ),
+    ),
+
   label: ({ color, size, animation, labelText, selected }) => {
     const safe = escapeHtml(labelText || "Hotspot");
     const fontSize = Math.max(10, Math.round(size * 0.28));
@@ -248,6 +304,8 @@ export const SHAPE_PREVIEW_SVG: Record<HotspotShape, string> = {
   plus: `<svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true"><circle cx="24" cy="24" r="14" fill="currentColor"/><path d="M24 14 V34 M14 24 H34" stroke="#111" stroke-width="4" stroke-linecap="round"/></svg>`,
   "pulse-dot": `<svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true"><circle cx="24" cy="24" r="14" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="24" cy="24" r="6" fill="currentColor"/></svg>`,
   label: `<svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true"><rect x="6" y="16" width="36" height="16" rx="8" fill="currentColor"/></svg>`,
+  gallery: `<svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true"><rect x="12" y="12" width="24" height="18" rx="2" fill="currentColor"/><path d="M14 28 L20 22 L24 26 L30 18 L36 28 Z" fill="#111" opacity="0.7"/></svg>`,
+  video: `<svg viewBox="0 0 48 48" width="28" height="28" aria-hidden="true"><circle cx="24" cy="24" r="14" fill="currentColor"/><path d="M20 16 L34 24 L20 32 Z" fill="#111"/></svg>`,
 };
 
 export const SHAPE_DISPLAY_NAMES: Record<HotspotShape, string> = {
@@ -260,6 +318,8 @@ export const SHAPE_DISPLAY_NAMES: Record<HotspotShape, string> = {
   plus: "Plus",
   "pulse-dot": "Pulse dot",
   label: "Label",
+  gallery: "Gallery",
+  video: "Video",
 };
 
 export function buildHotspotMarkerHtml(input: MarkerStyleInput): string {
@@ -313,9 +373,16 @@ export function normalizeStyleFields(input: {
   label_visibility?: string | null;
   type?: string;
 }): HotspotStyleFields {
+  const typed =
+    input.type === "info" ||
+    input.type === "gallery" ||
+    input.type === "video" ||
+    input.type === "link"
+      ? input.type
+      : undefined;
   const shape =
-    input.type === "info" && !input.style_shape
-      ? DEFAULT_INFO_SHAPE
+    typed && !input.style_shape
+      ? defaultShapeForHotspotType(typed)
       : resolveShape(input.style_shape ?? DEFAULT_LINK_SHAPE);
 
   return {

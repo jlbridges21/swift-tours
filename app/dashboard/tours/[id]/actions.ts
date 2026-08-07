@@ -4,13 +4,15 @@ import { revalidatePath } from "next/cache";
 
 import {
   DEFAULT_ANIMATION,
-  DEFAULT_INFO_SHAPE,
   DEFAULT_LABEL_VISIBILITY,
   DEFAULT_SIZE,
   HEX_COLOR_RE,
+  defaultShapeForHotspotType,
   isHotspotShape,
+  isHotspotType,
   sanitizeHotspotColor,
   validateStylePatch,
+  type HotspotType,
 } from "@/lib/hotspot-styles";
 import {
   clampBrightness,
@@ -19,7 +21,11 @@ import {
 } from "@/lib/adjustments";
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { clampPlanCoord } from "@/lib/floor-plans";
-import { sceneObjectPaths } from "@/lib/storage";
+import {
+  galleryImageObjectPaths,
+  sceneObjectPaths,
+} from "@/lib/storage";
+import { isYouTubeId } from "@/lib/youtube";
 import { createClient } from "@/lib/supabase/server";
 import type { FloorPlan, Scene, SceneGroup } from "@/types";
 
@@ -225,8 +231,23 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
   }
 
   // Delete storage objects before the row — paths are lost once the row is gone.
-  // Four objects: full, compat, thumb, nadir.
+  // Scene panoramas + any gallery images on this scene's hotspots.
   const paths = sceneObjectPaths(scene);
+
+  const { data: sceneHotspots } = await supabase
+    .from("hotspots")
+    .select("id")
+    .eq("scene_id", sceneId);
+  const hotspotIds = (sceneHotspots ?? []).map((h) => h.id);
+  if (hotspotIds.length > 0) {
+    const { data: galleryImages } = await supabase
+      .from("hotspot_images")
+      .select("storage_path, thumbnail_path")
+      .in("hotspot_id", hotspotIds);
+    for (const image of galleryImages ?? []) {
+      paths.push(...galleryImageObjectPaths(image));
+    }
+  }
 
   const { error: storageError } = await supabase.storage
     .from("panoramas")
@@ -739,7 +760,7 @@ async function requireOwnedHotspot(hotspotId: string) {
 
   const { data: hotspot, error } = await supabase
     .from("hotspots")
-    .select("id, scene_id")
+    .select("id, scene_id, type")
     .eq("id", hotspotId)
     .maybeSingle();
 
@@ -787,17 +808,23 @@ export async function createHotspot(
   sceneId: string,
   input: {
     id: string;
-    type: "link" | "info";
+    type: HotspotType;
     targetSceneId?: string | null;
     yaw: number;
     pitch: number;
     label?: string | null;
     content?: string | null;
+    videoId?: string | null;
+    videoStart?: number | null;
   },
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedScene(sceneId);
   if (owned.error || !owned.scene || !owned.tour) {
     return { error: owned.error ?? "Unauthorized." };
+  }
+
+  if (!isHotspotType(input.type)) {
+    return { error: "Invalid hotspot type." };
   }
 
   if (input.type === "link") {
@@ -809,6 +836,18 @@ export async function createHotspot(
     }
   }
 
+  if (input.type === "video") {
+    if (input.videoId != null && !isYouTubeId(input.videoId)) {
+      return { error: "Invalid YouTube video id." };
+    }
+    if (
+      input.videoStart != null &&
+      (!Number.isFinite(input.videoStart) || input.videoStart < 0)
+    ) {
+      return { error: "Start time must be zero or greater." };
+    }
+  }
+
   const tourDefaults = owned.tour as {
     default_hotspot_shape?: string;
     default_hotspot_color?: string;
@@ -816,11 +855,11 @@ export async function createHotspot(
   };
 
   const styleShape =
-    input.type === "info"
-      ? DEFAULT_INFO_SHAPE
-      : isHotspotShape(tourDefaults.default_hotspot_shape ?? "")
+    input.type === "link"
+      ? isHotspotShape(tourDefaults.default_hotspot_shape ?? "")
         ? tourDefaults.default_hotspot_shape!
-        : "arrow";
+        : "arrow"
+      : defaultShapeForHotspotType(input.type);
   const styleColor = sanitizeHotspotColor(
     tourDefaults.default_hotspot_color ?? "#FFFFFF",
   );
@@ -834,6 +873,8 @@ export async function createHotspot(
     pitch: input.pitch,
     label: input.label ?? null,
     content: input.type === "info" ? (input.content ?? null) : null,
+    video_id: input.type === "video" ? (input.videoId ?? null) : null,
+    video_start: input.type === "video" ? (input.videoStart ?? null) : null,
     style_shape: styleShape,
     style_color: styleColor,
     style_size: DEFAULT_SIZE,
@@ -852,12 +893,14 @@ export async function createHotspot(
 export async function updateHotspot(
   hotspotId: string,
   patch: {
-    type?: "link" | "info";
+    type?: HotspotType;
     targetSceneId?: string | null;
     yaw?: number;
     pitch?: number;
     label?: string | null;
     content?: string | null;
+    video_id?: string | null;
+    video_start?: number | null;
     style_shape?: string;
     style_color?: string;
     style_size?: number;
@@ -875,6 +918,17 @@ export async function updateHotspot(
     return { error: styleError };
   }
 
+  if (patch.video_id !== undefined && patch.video_id !== null) {
+    if (!isYouTubeId(patch.video_id)) {
+      return { error: "Invalid YouTube video id." };
+    }
+  }
+  if (patch.video_start !== undefined && patch.video_start !== null) {
+    if (!Number.isFinite(patch.video_start) || patch.video_start < 0) {
+      return { error: "Start time must be zero or greater." };
+    }
+  }
+
   const update: {
     type?: string;
     target_scene_id?: string | null;
@@ -882,6 +936,8 @@ export async function updateHotspot(
     pitch?: number;
     label?: string | null;
     content?: string | null;
+    video_id?: string | null;
+    video_start?: number | null;
     style_shape?: string;
     style_color?: string;
     style_size?: number;
@@ -897,6 +953,8 @@ export async function updateHotspot(
   if (patch.pitch !== undefined) update.pitch = patch.pitch;
   if (patch.label !== undefined) update.label = patch.label;
   if (patch.content !== undefined) update.content = patch.content;
+  if (patch.video_id !== undefined) update.video_id = patch.video_id;
+  if (patch.video_start !== undefined) update.video_start = patch.video_start;
   if (patch.style_shape !== undefined) update.style_shape = patch.style_shape;
   if (patch.style_color !== undefined) {
     update.style_color = sanitizeHotspotColor(patch.style_color);
@@ -909,8 +967,15 @@ export async function updateHotspot(
     update.label_visibility = patch.label_visibility;
   }
 
-  if (update.type === "info") {
+  if (update.type === "info" || update.type === "gallery" || update.type === "video") {
     update.target_scene_id = null;
+  }
+  if (update.type && update.type !== "video") {
+    update.video_id = null;
+    update.video_start = null;
+  }
+  if (update.type && update.type !== "info") {
+    update.content = null;
   }
 
   const { error } = await owned.supabase
@@ -990,6 +1055,27 @@ export async function deleteHotspot(
     return { error: owned.error ?? "Unauthorized." };
   }
 
+  const { data: galleryImages } = await owned.supabase
+    .from("hotspot_images")
+    .select("storage_path, thumbnail_path")
+    .eq("hotspot_id", hotspotId);
+
+  const paths: string[] = [];
+  for (const image of galleryImages ?? []) {
+    paths.push(...galleryImageObjectPaths(image));
+  }
+  if (paths.length > 0) {
+    const { error: storageError } = await owned.supabase.storage
+      .from("panoramas")
+      .remove(paths);
+    if (storageError) {
+      console.error(
+        "[deleteHotspot] gallery storage remove failed; proceeding with row delete",
+        { hotspotId, paths, message: storageError.message },
+      );
+    }
+  }
+
   const { error } = await owned.supabase
     .from("hotspots")
     .delete()
@@ -998,6 +1084,159 @@ export async function deleteHotspot(
   if (error) {
     return { error: error.message };
   }
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function createHotspotImage(
+  hotspotId: string,
+  input: {
+    id: string;
+    storagePath: string;
+    thumbnailPath?: string | null;
+    caption?: string | null;
+    position: number;
+  },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedHotspot(hotspotId);
+  if (owned.error || !owned.hotspot || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+  if (owned.hotspot.type !== "gallery") {
+    return { error: "Images can only be added to gallery hotspots." };
+  }
+
+  const { count, error: countError } = await owned.supabase
+    .from("hotspot_images")
+    .select("id", { count: "exact", head: true })
+    .eq("hotspot_id", hotspotId);
+
+  if (countError) {
+    return { error: countError.message };
+  }
+  if ((count ?? 0) >= 20) {
+    return { error: "Galleries are limited to 20 images." };
+  }
+
+  const { error } = await owned.supabase.from("hotspot_images").insert({
+    id: input.id,
+    hotspot_id: hotspotId,
+    storage_path: input.storagePath,
+    thumbnail_path: input.thumbnailPath ?? null,
+    caption: input.caption ?? null,
+    position: input.position,
+  });
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function updateHotspotImage(
+  imageId: string,
+  patch: { caption?: string | null; position?: number },
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "You must be signed in." };
+
+  const { data: image, error: imageError } = await supabase
+    .from("hotspot_images")
+    .select("id, hotspot_id")
+    .eq("id", imageId)
+    .maybeSingle();
+
+  if (imageError) return { error: imageError.message };
+  if (!image) return { error: "Image not found." };
+
+  const owned = await requireOwnedHotspot(image.hotspot_id);
+  if (owned.error || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const update: { caption?: string | null; position?: number } = {};
+  if (patch.caption !== undefined) update.caption = patch.caption;
+  if (patch.position !== undefined) update.position = patch.position;
+
+  const { error } = await supabase
+    .from("hotspot_images")
+    .update(update)
+    .eq("id", imageId);
+
+  if (error) return { error: error.message };
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function reorderHotspotImages(
+  hotspotId: string,
+  items: { id: string; position: number }[],
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedHotspot(hotspotId);
+  if (owned.error || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  for (const item of items) {
+    const { error } = await owned.supabase
+      .from("hotspot_images")
+      .update({ position: item.position })
+      .eq("id", item.id)
+      .eq("hotspot_id", hotspotId);
+    if (error) return { error: error.message };
+  }
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function deleteHotspotImage(
+  imageId: string,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "You must be signed in." };
+
+  const { data: image, error: imageError } = await supabase
+    .from("hotspot_images")
+    .select("id, hotspot_id, storage_path, thumbnail_path")
+    .eq("id", imageId)
+    .maybeSingle();
+
+  if (imageError) return { error: imageError.message };
+  if (!image) return { error: "Image not found." };
+
+  const owned = await requireOwnedHotspot(image.hotspot_id);
+  if (owned.error || !owned.scene) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const paths = galleryImageObjectPaths(image);
+  const { error: storageError } = await supabase.storage
+    .from("panoramas")
+    .remove(paths);
+  if (storageError) {
+    console.error(
+      "[deleteHotspotImage] storage remove failed; proceeding with row delete",
+      { imageId, paths, message: storageError.message },
+    );
+  }
+
+  const { error } = await supabase
+    .from("hotspot_images")
+    .delete()
+    .eq("id", imageId);
+
+  if (error) return { error: error.message };
 
   revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
   return {};

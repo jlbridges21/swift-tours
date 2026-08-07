@@ -103,6 +103,8 @@ export type PanoramaViewerHotspot = Pick<
   | "style_size"
   | "style_animation"
   | "label_visibility"
+  | "video_id"
+  | "video_start"
 >;
 
 /** Tour-level nadir render settings (size/opacity/rotation are live; patch is per-scene). */
@@ -157,6 +159,10 @@ export type PanoramaViewerProps = {
   /** Final yaw/pitch after a drag ends (edit mode). */
   onMarkerMoved?: (hotspotId: string, yaw: number, pitch: number) => void;
   onInfoPopoverOpenChange?: (open: boolean) => void;
+  /** View mode: open gallery modal for this hotspot. */
+  onOpenGallery?: (hotspotId: string) => void;
+  /** View mode: open video modal for this hotspot. */
+  onOpenVideo?: (hotspotId: string) => void;
   onViewerReady?: (viewer: Viewer) => void;
 };
 
@@ -185,7 +191,12 @@ export function hotspotToMarkerConfig(
   selected: boolean,
   scenes: PanoramaViewerScene[] = [],
 ): MarkerConfig {
-  const type = hotspot.type === "link" ? "link" : "info";
+  const type =
+    hotspot.type === "link" ||
+    hotspot.type === "gallery" ||
+    hotspot.type === "video"
+      ? hotspot.type
+      : "info";
   const targetName =
     hotspot.target_scene_id != null
       ? (scenes.find((scene) => scene.id === hotspot.target_scene_id)?.name ??
@@ -198,7 +209,13 @@ export function hotspotToMarkerConfig(
   const tooltipLabel =
     hotspot.label?.trim() ||
     targetName ||
-    (type === "link" ? "Go to scene" : "Info");
+    (type === "link"
+      ? "Go to scene"
+      : type === "gallery"
+        ? "Gallery"
+        : type === "video"
+          ? "Video"
+          : "Info");
 
   return {
     id: hotspot.id,
@@ -223,6 +240,8 @@ export function hotspotToMarkerConfig(
       label: hotspot.label,
       content: hotspot.content,
       targetSceneId: hotspot.target_scene_id,
+      videoId: hotspot.video_id,
+      videoStart: hotspot.video_start,
       yaw: hotspot.yaw,
       pitch: hotspot.pitch,
     },
@@ -496,6 +515,8 @@ export function PanoramaViewer({
   onMarkerMoving,
   onMarkerMoved,
   onInfoPopoverOpenChange,
+  onOpenGallery,
+  onOpenVideo,
   onViewerReady,
 }: PanoramaViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -508,6 +529,8 @@ export function PanoramaViewer({
   const onMarkerMovingRef = useRef(onMarkerMoving);
   const onMarkerMovedRef = useRef(onMarkerMoved);
   const onInfoPopoverOpenChangeRef = useRef(onInfoPopoverOpenChange);
+  const onOpenGalleryRef = useRef(onOpenGallery);
+  const onOpenVideoRef = useRef(onOpenVideo);
   const onViewerReadyRef = useRef(onViewerReady);
   /** True while the initial setNodes→setCurrentNode load is in flight. */
   const bootstrappingRef = useRef(false);
@@ -535,6 +558,8 @@ export function PanoramaViewer({
   onMarkerMovingRef.current = onMarkerMoving;
   onMarkerMovedRef.current = onMarkerMoved;
   onInfoPopoverOpenChangeRef.current = onInfoPopoverOpenChange;
+  onOpenGalleryRef.current = onOpenGallery;
+  onOpenVideoRef.current = onOpenVideo;
   onViewerReadyRef.current = onViewerReady;
   hotspotsRef.current = hotspots;
   viewerEffectsRef.current = viewerEffects;
@@ -802,6 +827,7 @@ export function PanoramaViewer({
 
       if (modeRef.current === "edit") {
         onMarkerSelectRef.current?.(event.marker.id);
+        return;
       }
 
       if (
@@ -809,9 +835,19 @@ export function PanoramaViewer({
         event.marker.data.targetSceneId
       ) {
         setInfoOverlay(null);
-        if (modeRef.current === "view") {
-          void tour.setCurrentNode(event.marker.data.targetSceneId);
-        }
+        void tour.setCurrentNode(event.marker.data.targetSceneId);
+        return;
+      }
+
+      if (event.marker.data?.type === "gallery") {
+        setInfoOverlay(null);
+        onOpenGalleryRef.current?.(event.marker.id);
+        return;
+      }
+
+      if (event.marker.data?.type === "video") {
+        setInfoOverlay(null);
+        onOpenVideoRef.current?.(event.marker.id);
         return;
       }
 

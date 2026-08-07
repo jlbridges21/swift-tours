@@ -1,13 +1,20 @@
 "use client";
 
-import { InfoIcon, Link2Icon, type LucideIcon } from "lucide-react";
+import {
+  ImagesIcon,
+  InfoIcon,
+  Link2Icon,
+  PlayIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import type { HotspotType } from "@/lib/hotspot-styles";
 
-export type PlaceableHotspotType = "link" | "info";
+export type PlaceableHotspotType = HotspotType;
 
 export type HotspotToolDefinition = {
   type: PlaceableHotspotType;
@@ -32,6 +39,18 @@ export const HOTSPOT_TOOLS: HotspotToolDefinition[] = [
     label: "Add info hotspot",
     shortLabel: "Info",
     icon: InfoIcon,
+  },
+  {
+    type: "gallery",
+    label: "Add gallery hotspot",
+    shortLabel: "Gallery",
+    icon: ImagesIcon,
+  },
+  {
+    type: "video",
+    label: "Add video hotspot",
+    shortLabel: "Video",
+    icon: PlayIcon,
   },
 ];
 

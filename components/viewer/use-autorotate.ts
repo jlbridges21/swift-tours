@@ -8,9 +8,16 @@ const YAW_PER_MS = 0.00012; // ~0.4 rpm — slow until the user interacts
 /**
  * Slow panorama autorotate without touching Viewer construction.
  * Stops permanently on the first user interaction with the viewer.
+ * While `paused` is true (e.g. media modal open), rotation is suspended.
  */
-export function useAutorotate(viewer: Viewer | null, enabled: boolean) {
+export function useAutorotate(
+  viewer: Viewer | null,
+  enabled: boolean,
+  paused = false,
+) {
   const stoppedRef = useRef(false);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     if (!viewer || !enabled) return;
@@ -28,12 +35,14 @@ export function useAutorotate(viewer: Viewer | null, enabled: boolean) {
       if (stoppedRef.current) return;
       const dt = Math.min(64, now - last);
       last = now;
-      try {
-        const pos = viewer.getPosition();
-        viewer.rotate({ yaw: pos.yaw + YAW_PER_MS * dt, pitch: pos.pitch });
-      } catch {
-        stop();
-        return;
+      if (!pausedRef.current) {
+        try {
+          const pos = viewer.getPosition();
+          viewer.rotate({ yaw: pos.yaw + YAW_PER_MS * dt, pitch: pos.pitch });
+        } catch {
+          stop();
+          return;
+        }
       }
       rafId = requestAnimationFrame(tick);
     };

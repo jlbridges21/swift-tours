@@ -1,6 +1,13 @@
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { createClient } from "@/lib/supabase/server";
-import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type {
+  FloorPlan,
+  Hotspot,
+  HotspotImage,
+  Scene,
+  SceneGroup,
+  Tour,
+} from "@/types";
 
 export type TourListItem = Tour & {
   scene_count: number;
@@ -162,6 +169,48 @@ export async function listHotspotsForTour(tourId: string): Promise<Hotspot[]> {
     .from("hotspots")
     .select("*")
     .in("scene_id", sceneIds);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
+}
+
+export async function listHotspotImagesForTour(
+  tourId: string,
+): Promise<HotspotImage[]> {
+  const supabase = await createClient();
+
+  const { data: scenes, error: scenesError } = await supabase
+    .from("scenes")
+    .select("id")
+    .eq("tour_id", tourId);
+
+  if (scenesError) {
+    throw new Error(scenesError.message);
+  }
+
+  const sceneIds = (scenes ?? []).map((scene) => scene.id);
+  if (sceneIds.length === 0) return [];
+
+  const { data: hotspots, error: hotspotsError } = await supabase
+    .from("hotspots")
+    .select("id")
+    .in("scene_id", sceneIds);
+
+  if (hotspotsError) {
+    throw new Error(hotspotsError.message);
+  }
+
+  const hotspotIds = (hotspots ?? []).map((h) => h.id);
+  if (hotspotIds.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("hotspot_images")
+    .select("*")
+    .in("hotspot_id", hotspotIds)
+    .order("position", { ascending: true });
 
   if (error) {
     throw new Error(error.message);

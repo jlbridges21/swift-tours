@@ -5,6 +5,7 @@ import {
   FloorPlanPanel,
   resolveCurrentFloorPlan,
 } from "@/components/viewer/floor-plan-panel";
+import { GalleryModal } from "@/components/viewer/gallery-modal";
 import {
   filterScenesForGroupKey,
   GroupSelector,
@@ -16,6 +17,7 @@ import { SceneStrip } from "@/components/viewer/scene-strip";
 import { ShareButton } from "@/components/viewer/share-button";
 import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
 import { useAutorotate } from "@/components/viewer/use-autorotate";
+import { VideoModal } from "@/components/viewer/video-modal";
 import { VrToggle } from "@/components/viewer/vr-toggle";
 import { Button } from "@/components/ui/button";
 import { resolvePanoramaPath } from "@/lib/gl-capabilities";
@@ -31,7 +33,14 @@ import {
   isTransitionEffect,
   type ViewerEffectsSettings,
 } from "@/lib/viewer-effects";
-import type { FloorPlan, Hotspot, Scene, SceneGroup, Tour } from "@/types";
+import type {
+  FloorPlan,
+  Hotspot,
+  HotspotImage,
+  Scene,
+  SceneGroup,
+  Tour,
+} from "@/types";
 import { MapIcon } from "lucide-react";
 import type { Viewer } from "@photo-sphere-viewer/core";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -42,6 +51,7 @@ export type TourViewerShellProps = {
   groups?: SceneGroup[];
   floorPlans?: FloorPlan[];
   hotspots: Hotspot[];
+  hotspotImages?: HotspotImage[];
   /** When true, record a public view (public + embed pages). */
   trackViews?: boolean;
   /** Optional top banner (owner preview). */
@@ -149,6 +159,7 @@ export function TourViewerShell({
   groups = [],
   floorPlans = [],
   hotspots,
+  hotspotImages = [],
   trackViews = false,
   banner,
   showShare = true,
@@ -183,8 +194,27 @@ export function TourViewerShell({
   );
   const [firstSceneReady, setFirstSceneReady] = useState(false);
   const [viewer, setViewer] = useState<Viewer | null>(null);
+  const [galleryHotspotId, setGalleryHotspotId] = useState<string | null>(null);
+  const [videoHotspotId, setVideoHotspotId] = useState<string | null>(null);
 
-  useAutorotate(viewer, autorotate);
+  const mediaModalOpen = galleryHotspotId != null || videoHotspotId != null;
+  useAutorotate(viewer, autorotate, mediaModalOpen);
+
+  const galleryHotspot = useMemo(
+    () => hotspots.find((h) => h.id === galleryHotspotId) ?? null,
+    [hotspots, galleryHotspotId],
+  );
+  const galleryImages = useMemo(
+    () =>
+      galleryHotspotId
+        ? hotspotImages.filter((img) => img.hotspot_id === galleryHotspotId)
+        : [],
+    [hotspotImages, galleryHotspotId],
+  );
+  const videoHotspot = useMemo(
+    () => hotspots.find((h) => h.id === videoHotspotId) ?? null,
+    [hotspots, videoHotspotId],
+  );
 
   const effects = useMemo(() => effectsFromTour(tour), [tour]);
   const coverId = tour.cover_scene_id ?? orderedScenes[0]?.id ?? null;
@@ -316,6 +346,8 @@ export function TourViewerShell({
             setFirstSceneReady(true);
           }}
           onViewerReady={setViewer}
+          onOpenGallery={setGalleryHotspotId}
+          onOpenVideo={setVideoHotspotId}
           ariaLabel={
             currentScene
               ? `360° panorama: ${currentScene.name}`
@@ -323,6 +355,24 @@ export function TourViewerShell({
           }
         />
       </div>
+
+      <GalleryModal
+        open={galleryHotspotId != null && galleryImages.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setGalleryHotspotId(null);
+        }}
+        images={galleryImages}
+        title={galleryHotspot?.label}
+      />
+      <VideoModal
+        open={videoHotspotId != null && Boolean(videoHotspot?.video_id)}
+        onOpenChange={(open) => {
+          if (!open) setVideoHotspotId(null);
+        }}
+        videoId={videoHotspot?.video_id}
+        start={videoHotspot?.video_start}
+        title={videoHotspot?.label}
+      />
 
       {showTopChrome ? (
         <div

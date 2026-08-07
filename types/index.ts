@@ -5,6 +5,7 @@ export type Scene = Database["public"]["Tables"]["scenes"]["Row"];
 export type SceneGroup = Database["public"]["Tables"]["scene_groups"]["Row"];
 export type FloorPlan = Database["public"]["Tables"]["floor_plans"]["Row"];
 export type Hotspot = Database["public"]["Tables"]["hotspots"]["Row"];
+export type HotspotImage = Database["public"]["Tables"]["hotspot_images"]["Row"];
 
 export type TourInsert = Database["public"]["Tables"]["tours"]["Insert"];
 export type SceneInsert = Database["public"]["Tables"]["scenes"]["Insert"];
@@ -13,3 +14,5 @@ export type SceneGroupInsert =
 export type FloorPlanInsert =
   Database["public"]["Tables"]["floor_plans"]["Insert"];
 export type HotspotInsert = Database["public"]["Tables"]["hotspots"]["Insert"];
+export type HotspotImageInsert =
+  Database["public"]["Tables"]["hotspot_images"]["Insert"];

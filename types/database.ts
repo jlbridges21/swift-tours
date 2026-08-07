@@ -313,6 +313,8 @@ export type Database = {
           style_size: number;
           style_animation: string;
           label_visibility: string;
+          video_id: string | null;
+          video_start: number | null;
           created_at: string;
         };
         Insert: {
@@ -329,6 +331,8 @@ export type Database = {
           style_size?: number;
           style_animation?: string;
           label_visibility?: string;
+          video_id?: string | null;
+          video_start?: number | null;
           created_at?: string;
         };
         Update: {
@@ -345,6 +349,8 @@ export type Database = {
           style_size?: number;
           style_animation?: string;
           label_visibility?: string;
+          video_id?: string | null;
+          video_start?: number | null;
           created_at?: string;
         };
         Relationships: [
@@ -360,6 +366,44 @@ export type Database = {
             columns: ["target_scene_id"];
             isOneToOne: false;
             referencedRelation: "scenes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      hotspot_images: {
+        Row: {
+          id: string;
+          hotspot_id: string;
+          storage_path: string;
+          thumbnail_path: string | null;
+          caption: string | null;
+          position: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          hotspot_id: string;
+          storage_path: string;
+          thumbnail_path?: string | null;
+          caption?: string | null;
+          position?: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          hotspot_id?: string;
+          storage_path?: string;
+          thumbnail_path?: string | null;
+          caption?: string | null;
+          position?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "hotspot_images_hotspot_id_fkey";
+            columns: ["hotspot_id"];
+            isOneToOne: false;
+            referencedRelation: "hotspots";
             referencedColumns: ["id"];
           },
         ];

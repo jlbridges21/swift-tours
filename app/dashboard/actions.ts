@@ -6,7 +6,11 @@ import { redirect } from "next/navigation";
 import { HEX_COLOR_RE, isHotspotShape } from "@/lib/hotspot-styles";
 import { isNadirLogoSource, isNadirType } from "@/lib/nadir";
 import { generateSlug } from "@/lib/slug";
-import { sceneObjectPaths } from "@/lib/storage";
+import {
+  galleryPath,
+  galleryThumbPath,
+  sceneObjectPaths,
+} from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
 import {
   isIntroEffect,
@@ -14,6 +18,7 @@ import {
 } from "@/lib/viewer-effects";
 import type {
   FloorPlanInsert,
+  HotspotImageInsert,
   HotspotInsert,
   SceneGroupInsert,
   SceneInsert,
@@ -456,7 +461,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   // Collect storage paths before the row (and cascade) disappears.
   const { data: scenes, error: scenesError } = await supabase
     .from("scenes")
-    .select("storage_path, thumbnail_path, compat_path, nadir_patch_path")
+    .select("id, storage_path, thumbnail_path, compat_path, nadir_patch_path")
     .eq("tour_id", id);
 
   if (scenesError) {
@@ -472,12 +477,40 @@ export async function deleteTour(id: string): Promise<ActionResult> {
     return { error: plansError.message };
   }
 
+  const sceneIds = (scenes ?? []).map((scene) => scene.id);
+  let galleryImages: { storage_path: string; thumbnail_path: string | null }[] =
+    [];
+  if (sceneIds.length > 0) {
+    const { data: hotspotsForTour, error: hotspotsLookupError } = await supabase
+      .from("hotspots")
+      .select("id")
+      .in("scene_id", sceneIds);
+    if (hotspotsLookupError) {
+      return { error: hotspotsLookupError.message };
+    }
+    const hotspotIds = (hotspotsForTour ?? []).map((h) => h.id);
+    if (hotspotIds.length > 0) {
+      const { data: images, error: imagesError } = await supabase
+        .from("hotspot_images")
+        .select("storage_path, thumbnail_path")
+        .in("hotspot_id", hotspotIds);
+      if (imagesError) {
+        return { error: imagesError.message };
+      }
+      galleryImages = images ?? [];
+    }
+  }
+
   const paths: string[] = [];
   for (const scene of scenes ?? []) {
     paths.push(...sceneObjectPaths(scene));
   }
   for (const plan of plans ?? []) {
     paths.push(plan.storage_path);
+  }
+  for (const image of galleryImages) {
+    paths.push(image.storage_path);
+    if (image.thumbnail_path) paths.push(image.thumbnail_path);
   }
 
   const CHUNK = 100;
@@ -823,14 +856,18 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
       }
 
       const hotspots = originalHotspots ?? [];
+      const hotspotIdMap = new Map<string, string>();
       if (hotspots.length > 0) {
         const hotspotInserts: HotspotInsert[] = hotspots.map((hotspot) => {
           const newSceneId = sceneIdMap.get(hotspot.scene_id);
           if (!newSceneId) {
             throw new Error("Missing scene remap for hotspot.");
           }
+          const newHotspotId = crypto.randomUUID();
+          hotspotIdMap.set(hotspot.id, newHotspotId);
 
           return {
+            id: newHotspotId,
             scene_id: newSceneId,
             target_scene_id: hotspot.target_scene_id
               ? (sceneIdMap.get(hotspot.target_scene_id) ?? null)
@@ -840,6 +877,13 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
             pitch: hotspot.pitch,
             label: hotspot.label,
             content: hotspot.content,
+            style_shape: hotspot.style_shape,
+            style_color: hotspot.style_color,
+            style_size: hotspot.style_size,
+            style_animation: hotspot.style_animation,
+            label_visibility: hotspot.label_visibility,
+            video_id: hotspot.video_id,
+            video_start: hotspot.video_start,
           };
         });
 
@@ -850,6 +894,72 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
         if (insertHotspotsError) {
           await rollback();
           return { error: insertHotspotsError.message };
+        }
+
+        const originalHotspotIds = hotspots.map((h) => h.id);
+        const { data: originalImages, error: imagesError } = await supabase
+          .from("hotspot_images")
+          .select("*")
+          .in("hotspot_id", originalHotspotIds);
+
+        if (imagesError) {
+          await rollback();
+          return { error: imagesError.message };
+        }
+
+        const images = originalImages ?? [];
+        if (images.length > 0) {
+          const imageInserts: HotspotImageInsert[] = [];
+
+          for (const image of images) {
+            const newHotspotId = hotspotIdMap.get(image.hotspot_id);
+            if (!newHotspotId) {
+              throw new Error("Missing hotspot remap for gallery image.");
+            }
+            const newImageId = crypto.randomUUID();
+            const newStoragePath = galleryPath(user.id, newTourId, newImageId);
+            const newThumbPath = image.thumbnail_path
+              ? galleryThumbPath(user.id, newTourId, newImageId)
+              : null;
+
+            const { error: copyFullError } = await supabase.storage
+              .from("panoramas")
+              .copy(image.storage_path, newStoragePath);
+            if (copyFullError) {
+              await rollback();
+              return { error: copyFullError.message };
+            }
+            copiedStoragePaths.push(newStoragePath);
+
+            if (image.thumbnail_path && newThumbPath) {
+              const { error: copyThumbError } = await supabase.storage
+                .from("panoramas")
+                .copy(image.thumbnail_path, newThumbPath);
+              if (copyThumbError) {
+                await rollback();
+                return { error: copyThumbError.message };
+              }
+              copiedStoragePaths.push(newThumbPath);
+            }
+
+            imageInserts.push({
+              id: newImageId,
+              hotspot_id: newHotspotId,
+              storage_path: newStoragePath,
+              thumbnail_path: newThumbPath,
+              caption: image.caption,
+              position: image.position,
+            });
+          }
+
+          const { error: insertImagesError } = await supabase
+            .from("hotspot_images")
+            .insert(imageInserts);
+
+          if (insertImagesError) {
+            await rollback();
+            return { error: insertImagesError.message };
+          }
         }
       }
 

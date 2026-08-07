@@ -40,7 +40,7 @@ export function GET() {
     iframe.setAttribute("allowfullscreen", "true");
     iframe.setAttribute(
       "allow",
-      "fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking"
+      "fullscreen; accelerometer; gyroscope; magnetometer; xr-spatial-tracking; autoplay; encrypted-media; picture-in-picture"
     );
     iframe.setAttribute(
       "style",

@@ -4,6 +4,7 @@ import { TourEditor } from "@/components/editor/tour-editor";
 import {
   getTourById,
   listFloorPlansForTour,
+  listHotspotImagesForTour,
   listHotspotsForTour,
   listSceneGroupsForTour,
   listScenesForTour,
@@ -30,12 +31,14 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
     notFound();
   }
 
-  const [scenes, groups, floorPlans, hotspots] = await Promise.all([
-    listScenesForTour(id),
-    listSceneGroupsForTour(id),
-    listFloorPlansForTour(id),
-    listHotspotsForTour(id),
-  ]);
+  const [scenes, groups, floorPlans, hotspots, hotspotImages] =
+    await Promise.all([
+      listScenesForTour(id),
+      listSceneGroupsForTour(id),
+      listFloorPlansForTour(id),
+      listHotspotsForTour(id),
+      listHotspotImagesForTour(id),
+    ]);
 
   return (
     <TourEditor
@@ -44,6 +47,7 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
       groups={groups}
       floorPlans={floorPlans}
       hotspots={hotspots}
+      hotspotImages={hotspotImages}
       userId={user.id}
     />
   );
