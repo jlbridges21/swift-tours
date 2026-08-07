@@ -1,10 +1,10 @@
 /**
  * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql.
+ * supabase/migrations/0001_initial_schema.sql (+ 0002, 0003).
  *
- * Overwrite this file after applying the migration:
+ * Overwrite this file after applying migrations:
  *
- *   npx supabase gen types typescript --project-id <ref> > types/database.ts
+ *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  *
  * Project ref: Supabase Dashboard → Project Settings → General → Reference ID
  * (also the subdomain in NEXT_PUBLIC_SUPABASE_URL).
@@ -30,6 +30,8 @@ export type Database = {
           cover_scene_id: string | null;
           is_public: boolean;
           password_hash: string | null;
+          default_hotspot_shape: string;
+          default_hotspot_color: string;
           created_at: string;
           updated_at: string;
         };
@@ -42,6 +44,8 @@ export type Database = {
           cover_scene_id?: string | null;
           is_public?: boolean;
           password_hash?: string | null;
+          default_hotspot_shape?: string;
+          default_hotspot_color?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -54,6 +58,8 @@ export type Database = {
           cover_scene_id?: string | null;
           is_public?: boolean;
           password_hash?: string | null;
+          default_hotspot_shape?: string;
+          default_hotspot_color?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -128,6 +134,11 @@ export type Database = {
           pitch: number;
           label: string | null;
           content: string | null;
+          style_shape: string;
+          style_color: string;
+          style_size: number;
+          style_animation: string;
+          label_visibility: string;
           created_at: string;
         };
         Insert: {
@@ -139,6 +150,11 @@ export type Database = {
           pitch: number;
           label?: string | null;
           content?: string | null;
+          style_shape?: string;
+          style_color?: string;
+          style_size?: number;
+          style_animation?: string;
+          label_visibility?: string;
           created_at?: string;
         };
         Update: {
@@ -150,6 +166,11 @@ export type Database = {
           pitch?: number;
           label?: string | null;
           content?: string | null;
+          style_shape?: string;
+          style_color?: string;
+          style_size?: number;
+          style_animation?: string;
+          label_visibility?: string;
           created_at?: string;
         };
         Relationships: [

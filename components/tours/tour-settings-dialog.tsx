@@ -18,7 +18,17 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { formatViewCount } from "@/lib/format";
+import {
+  HOTSPOT_SHAPES,
+  PRESET_COLORS,
+  SHAPE_DISPLAY_NAMES,
+  SHAPE_PREVIEW_SVG,
+  isHotspotShape,
+  sanitizeHotspotColor,
+  type HotspotShape,
+} from "@/lib/hotspot-styles";
 import type { TourListItem } from "@/lib/queries/tours";
+import { cn } from "@/lib/utils";
 
 type TourSettingsDialogProps = {
   tour: TourListItem;
@@ -34,6 +44,14 @@ export function TourSettingsDialog({
   const [title, setTitle] = useState(tour.title);
   const [description, setDescription] = useState(tour.description ?? "");
   const [isPublic, setIsPublic] = useState(tour.is_public);
+  const [defaultShape, setDefaultShape] = useState<HotspotShape>(
+    isHotspotShape(tour.default_hotspot_shape)
+      ? tour.default_hotspot_shape
+      : "arrow",
+  );
+  const [defaultColor, setDefaultColor] = useState(
+    sanitizeHotspotColor(tour.default_hotspot_color),
+  );
   const [pending, startTransition] = useTransition();
 
   function handleOpenChange(next: boolean) {
@@ -41,6 +59,12 @@ export function TourSettingsDialog({
       setTitle(tour.title);
       setDescription(tour.description ?? "");
       setIsPublic(tour.is_public);
+      setDefaultShape(
+        isHotspotShape(tour.default_hotspot_shape)
+          ? tour.default_hotspot_shape
+          : "arrow",
+      );
+      setDefaultColor(sanitizeHotspotColor(tour.default_hotspot_color));
     }
     onOpenChange(next);
   }
@@ -52,6 +76,8 @@ export function TourSettingsDialog({
         title,
         description: description.trim() ? description.trim() : null,
         is_public: isPublic,
+        default_hotspot_shape: defaultShape,
+        default_hotspot_color: defaultColor,
       });
 
       if (result.error) {
@@ -66,7 +92,7 @@ export function TourSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Tour settings</DialogTitle>
           <DialogDescription>
@@ -108,6 +134,73 @@ export function TourSettingsDialog({
               disabled={pending}
             />
           </div>
+
+          <div className="flex flex-col gap-2 border-t border-foreground/10 pt-4">
+            <Label>Default hotspot style</Label>
+            <p className="text-xs text-muted-foreground">
+              Applies only to new hotspots. Existing markers keep their current
+              style.
+            </p>
+            <div className="grid grid-cols-3 gap-1.5">
+              {HOTSPOT_SHAPES.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  disabled={pending}
+                  title={SHAPE_DISPLAY_NAMES[key]}
+                  aria-label={SHAPE_DISPLAY_NAMES[key]}
+                  aria-pressed={defaultShape === key}
+                  className={cn(
+                    "flex flex-col items-center gap-1 rounded-md border px-1 py-1.5 text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                    defaultShape === key
+                      ? "border-foreground bg-muted"
+                      : "border-transparent hover:bg-muted/60",
+                  )}
+                  onClick={() => setDefaultShape(key)}
+                >
+                  <span
+                    className="text-foreground"
+                    dangerouslySetInnerHTML={{
+                      __html: SHAPE_PREVIEW_SVG[key],
+                    }}
+                  />
+                  <span className="truncate">{SHAPE_DISPLAY_NAMES[key]}</span>
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {PRESET_COLORS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  disabled={pending}
+                  aria-label={`Default color ${preset}`}
+                  aria-pressed={
+                    defaultColor.toUpperCase() === preset.toUpperCase()
+                  }
+                  className={cn(
+                    "size-7 rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                    defaultColor.toUpperCase() === preset.toUpperCase()
+                      ? "ring-2 ring-ring ring-offset-1"
+                      : "border-foreground/20",
+                  )}
+                  style={{ backgroundColor: preset }}
+                  onClick={() => setDefaultColor(sanitizeHotspotColor(preset))}
+                />
+              ))}
+              <input
+                type="color"
+                aria-label="Custom default color"
+                value={defaultColor}
+                disabled={pending}
+                className="size-7 cursor-pointer rounded-md border border-foreground/20 bg-transparent p-0 disabled:opacity-50"
+                onChange={(event) =>
+                  setDefaultColor(sanitizeHotspotColor(event.target.value))
+                }
+              />
+            </div>
+          </div>
+
           <DialogFooter>
             <Button
               type="button"

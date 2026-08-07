@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import { HEX_COLOR_RE, isHotspotShape } from "@/lib/hotspot-styles";
 import { generateSlug } from "@/lib/slug";
 import { createClient } from "@/lib/supabase/server";
 import type { HotspotInsert, SceneInsert, TourInsert } from "@/types";
@@ -72,6 +73,8 @@ export async function updateTour(
     title: string;
     description: string | null;
     is_public: boolean;
+    default_hotspot_shape?: string;
+    default_hotspot_color?: string;
   },
 ): Promise<ActionResult> {
   const supabase = await createClient();
@@ -88,12 +91,31 @@ export async function updateTour(
     return { error: "Title is required." };
   }
 
+  if (
+    input.default_hotspot_shape !== undefined &&
+    !isHotspotShape(input.default_hotspot_shape)
+  ) {
+    return { error: "Invalid default hotspot shape." };
+  }
+  if (
+    input.default_hotspot_color !== undefined &&
+    !HEX_COLOR_RE.test(input.default_hotspot_color)
+  ) {
+    return { error: "Default color must be a hex value like #FFFFFF." };
+  }
+
   const { data: tour, error } = await supabase
     .from("tours")
     .update({
       title,
       description: input.description,
       is_public: input.is_public,
+      ...(input.default_hotspot_shape !== undefined
+        ? { default_hotspot_shape: input.default_hotspot_shape }
+        : {}),
+      ...(input.default_hotspot_color !== undefined
+        ? { default_hotspot_color: input.default_hotspot_color }
+        : {}),
     })
     .eq("id", id)
     .select("slug")

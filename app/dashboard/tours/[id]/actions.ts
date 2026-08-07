@@ -2,6 +2,16 @@
 
 import { revalidatePath } from "next/cache";
 
+import {
+  DEFAULT_ANIMATION,
+  DEFAULT_INFO_SHAPE,
+  DEFAULT_LABEL_VISIBILITY,
+  DEFAULT_SIZE,
+  HEX_COLOR_RE,
+  isHotspotShape,
+  sanitizeHotspotColor,
+  validateStylePatch,
+} from "@/lib/hotspot-styles";
 import { createClient } from "@/lib/supabase/server";
 import type { Scene } from "@/types";
 
@@ -38,7 +48,9 @@ async function requireOwnedTour(tourId: string) {
 
   const { data: tour, error } = await supabase
     .from("tours")
-    .select("id, owner_id, cover_scene_id, slug")
+    .select(
+      "id, owner_id, cover_scene_id, slug, default_hotspot_shape, default_hotspot_color",
+    )
     .eq("id", tourId)
     .maybeSingle();
 
@@ -480,7 +492,7 @@ export async function createHotspot(
   },
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedScene(sceneId);
-  if (owned.error || !owned.scene) {
+  if (owned.error || !owned.scene || !owned.tour) {
     return { error: owned.error ?? "Unauthorized." };
   }
 
@@ -493,6 +505,22 @@ export async function createHotspot(
     }
   }
 
+  const tourDefaults = owned.tour as {
+    default_hotspot_shape?: string;
+    default_hotspot_color?: string;
+    slug?: string;
+  };
+
+  const styleShape =
+    input.type === "info"
+      ? DEFAULT_INFO_SHAPE
+      : isHotspotShape(tourDefaults.default_hotspot_shape ?? "")
+        ? tourDefaults.default_hotspot_shape!
+        : "arrow";
+  const styleColor = sanitizeHotspotColor(
+    tourDefaults.default_hotspot_color ?? "#FFFFFF",
+  );
+
   const { error } = await owned.supabase.from("hotspots").insert({
     id: input.id,
     scene_id: sceneId,
@@ -502,6 +530,11 @@ export async function createHotspot(
     pitch: input.pitch,
     label: input.label ?? null,
     content: input.type === "info" ? (input.content ?? null) : null,
+    style_shape: styleShape,
+    style_color: styleColor,
+    style_size: DEFAULT_SIZE,
+    style_animation: DEFAULT_ANIMATION,
+    label_visibility: DEFAULT_LABEL_VISIBILITY,
   });
 
   if (error) {
@@ -521,11 +554,21 @@ export async function updateHotspot(
     pitch?: number;
     label?: string | null;
     content?: string | null;
+    style_shape?: string;
+    style_color?: string;
+    style_size?: number;
+    style_animation?: string;
+    label_visibility?: string;
   },
 ): Promise<SceneActionResult> {
   const owned = await requireOwnedHotspot(hotspotId);
   if (owned.error || !owned.hotspot || !owned.scene) {
     return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const styleError = validateStylePatch(patch);
+  if (styleError) {
+    return { error: styleError };
   }
 
   const update: {
@@ -535,6 +578,11 @@ export async function updateHotspot(
     pitch?: number;
     label?: string | null;
     content?: string | null;
+    style_shape?: string;
+    style_color?: string;
+    style_size?: number;
+    style_animation?: string;
+    label_visibility?: string;
   } = {};
 
   if (patch.type !== undefined) update.type = patch.type;
@@ -545,6 +593,17 @@ export async function updateHotspot(
   if (patch.pitch !== undefined) update.pitch = patch.pitch;
   if (patch.label !== undefined) update.label = patch.label;
   if (patch.content !== undefined) update.content = patch.content;
+  if (patch.style_shape !== undefined) update.style_shape = patch.style_shape;
+  if (patch.style_color !== undefined) {
+    update.style_color = sanitizeHotspotColor(patch.style_color);
+  }
+  if (patch.style_size !== undefined) update.style_size = patch.style_size;
+  if (patch.style_animation !== undefined) {
+    update.style_animation = patch.style_animation;
+  }
+  if (patch.label_visibility !== undefined) {
+    update.label_visibility = patch.label_visibility;
+  }
 
   if (update.type === "info") {
     update.target_scene_id = null;
@@ -560,6 +619,62 @@ export async function updateHotspot(
   }
 
   revalidateTourCaches(owned.scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function applyHotspotStyleToTour(
+  tourId: string,
+  style: {
+    style_shape: string;
+    style_color: string;
+    style_size: number;
+    style_animation: string;
+    label_visibility: string;
+  },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.user || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const styleError = validateStylePatch(style);
+  if (styleError) {
+    return { error: styleError };
+  }
+  if (!HEX_COLOR_RE.test(style.style_color)) {
+    return { error: "Color must be a hex value like #FFFFFF." };
+  }
+
+  const { data: scenes, error: scenesError } = await owned.supabase
+    .from("scenes")
+    .select("id")
+    .eq("tour_id", tourId);
+
+  if (scenesError) {
+    return { error: scenesError.message };
+  }
+
+  const sceneIds = (scenes ?? []).map((scene) => scene.id);
+  if (sceneIds.length === 0) {
+    return {};
+  }
+
+  const { error } = await owned.supabase
+    .from("hotspots")
+    .update({
+      style_shape: style.style_shape,
+      style_color: sanitizeHotspotColor(style.style_color),
+      style_size: style.style_size,
+      style_animation: style.style_animation,
+      label_visibility: style.label_visibility,
+    })
+    .in("scene_id", sceneIds);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(tourId, owned.tour.slug);
   return {};
 }
 

@@ -29,6 +29,14 @@ import {
   PanoramaViewer,
   type PanoramaClickPayload,
 } from "@/components/viewer/panorama-viewer-client";
+import {
+  DEFAULT_ANIMATION,
+  DEFAULT_INFO_SHAPE,
+  DEFAULT_LABEL_VISIBILITY,
+  DEFAULT_SIZE,
+  isHotspotShape,
+  sanitizeHotspotColor,
+} from "@/lib/hotspot-styles";
 import type { Hotspot, Scene, Tour } from "@/types";
 
 type TourEditorProps = {
@@ -263,6 +271,10 @@ function TourEditorInner({
     if (!activeSceneId || !placeDraft) return;
 
     const forwardId = crypto.randomUUID();
+    const linkShape = isHotspotShape(tour.default_hotspot_shape)
+      ? tour.default_hotspot_shape
+      : "arrow";
+    const linkColor = sanitizeHotspotColor(tour.default_hotspot_color);
     const forward: Hotspot = {
       id: forwardId,
       scene_id: activeSceneId,
@@ -272,6 +284,11 @@ function TourEditorInner({
       pitch: placeDraft.pitch,
       label: input.label || null,
       content: null,
+      style_shape: linkShape,
+      style_color: linkColor,
+      style_size: DEFAULT_SIZE,
+      style_animation: DEFAULT_ANIMATION,
+      label_visibility: DEFAULT_LABEL_VISIBILITY,
       created_at: new Date().toISOString(),
     };
 
@@ -288,6 +305,11 @@ function TourEditorInner({
         pitch: 0,
         label: input.label || null,
         content: null,
+        style_shape: linkShape,
+        style_color: linkColor,
+        style_size: DEFAULT_SIZE,
+        style_animation: DEFAULT_ANIMATION,
+        label_visibility: DEFAULT_LABEL_VISIBILITY,
         created_at: new Date().toISOString(),
       };
       created.push(returnHotspot);
@@ -351,6 +373,11 @@ function TourEditorInner({
       pitch: placeDraft.pitch,
       label: input.label || null,
       content: input.content || null,
+      style_shape: DEFAULT_INFO_SHAPE,
+      style_color: sanitizeHotspotColor(tour.default_hotspot_color),
+      style_size: DEFAULT_SIZE,
+      style_animation: DEFAULT_ANIMATION,
+      label_visibility: DEFAULT_LABEL_VISIBILITY,
       created_at: new Date().toISOString(),
     };
 
@@ -519,6 +546,7 @@ function TourEditorInner({
 
         <div className="order-3 hidden lg:flex">
           <HotspotPanel
+            tourId={tour.id}
             scenes={scenes}
             hotspots={hotspots}
             activeSceneId={activeSceneId}

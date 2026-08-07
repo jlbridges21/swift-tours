@@ -25,6 +25,13 @@ import {
 } from "react";
 
 import { publicUrl } from "@/lib/storage";
+import {
+  buildHotspotMarkerHtml,
+  clampHotspotSize,
+  escapeHtml,
+  isLabelVisibility,
+  sanitizeHotspotColor,
+} from "@/lib/hotspot-styles";
 import { cn } from "@/lib/utils";
 import type { Hotspot, Scene } from "@/types";
 
@@ -52,6 +59,11 @@ export type PanoramaViewerHotspot = Pick<
   | "pitch"
   | "label"
   | "content"
+  | "style_shape"
+  | "style_color"
+  | "style_size"
+  | "style_animation"
+  | "label_visibility"
 >;
 
 export type PanoramaClickPayload = {
@@ -84,31 +96,61 @@ type InfoOverlay = {
   content: string | null;
 };
 
-function markerHtml(type: "link" | "info", selected: boolean): string {
-  const border = selected ? "#3b82f6" : "rgba(255,255,255,0.95)";
-  const bg =
-    type === "link" ? "rgba(37,99,235,0.92)" : "rgba(15,15,15,0.88)";
-  const icon = type === "link" ? "→" : "i";
-  return `<div style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:${bg};color:#fff;font-size:13px;font-weight:700;font-family:system-ui,sans-serif;border:2px solid ${border};box-shadow:${selected ? "0 0 0 3px rgba(59,130,246,0.45)" : "none"};cursor:pointer;user-select:none;">${icon}</div>`;
+function markerSize(hotspot: PanoramaViewerHotspot): {
+  width: number;
+  height: number;
+} {
+  const size = clampHotspotSize(hotspot.style_size);
+  if (hotspot.style_shape === "label") {
+    const height = Math.max(22, Math.round(size * 0.55));
+    return { width: Math.max(size, 96), height };
+  }
+  return { width: size, height: size };
 }
 
 export function hotspotToMarkerConfig(
   hotspot: PanoramaViewerHotspot,
   selected: boolean,
+  scenes: PanoramaViewerScene[] = [],
 ): MarkerConfig {
   const type = hotspot.type === "link" ? "link" : "info";
+  const targetName =
+    hotspot.target_scene_id != null
+      ? (scenes.find((scene) => scene.id === hotspot.target_scene_id)?.name ??
+        null)
+      : null;
+  const visibility = isLabelVisibility(hotspot.label_visibility)
+    ? hotspot.label_visibility
+    : "hover";
+  const size = markerSize(hotspot);
+  const tooltipLabel =
+    hotspot.label?.trim() ||
+    targetName ||
+    (type === "link" ? "Go to scene" : "Info");
+
   return {
     id: hotspot.id,
     position: { yaw: hotspot.yaw, pitch: hotspot.pitch },
-    html: markerHtml(type, selected),
-    size: { width: 28, height: 28 },
+    html: buildHotspotMarkerHtml({
+      shape: hotspot.style_shape,
+      color: sanitizeHotspotColor(hotspot.style_color),
+      size: hotspot.style_size,
+      animation: hotspot.style_animation,
+      labelVisibility: hotspot.label_visibility,
+      label: hotspot.label,
+      fallbackLabel: targetName,
+      selected,
+    }),
+    size,
     anchor: "center center",
-    tooltip: hotspot.label ?? (type === "link" ? "Link" : "Info"),
+    // PSV may render tooltip content as HTML — escape user/scene names.
+    tooltip: visibility === "hover" ? escapeHtml(tooltipLabel) : undefined,
     data: {
       hotspotId: hotspot.id,
       type,
       label: hotspot.label,
       content: hotspot.content,
+      targetSceneId: hotspot.target_scene_id,
     },
   };
 }
@@ -128,8 +170,6 @@ function buildNodes(
   hotspots: PanoramaViewerHotspot[],
   mode: "view" | "edit",
 ): VirtualTourNode[] {
-  const sceneIds = new Set(scenes.map((scene) => scene.id));
-
   return scenes.map((scene) => {
     const sceneHotspots = hotspots.filter(
       (hotspot) => hotspot.scene_id === scene.id,
@@ -158,25 +198,12 @@ function buildNodes(
       };
     }
 
-    const links: VirtualTourLink[] = sceneHotspots
-      .filter(
-        (hotspot) =>
-          hotspot.type === "link" &&
-          hotspot.target_scene_id !== null &&
-          sceneIds.has(hotspot.target_scene_id),
-      )
-      .map((hotspot) => ({
-        nodeId: hotspot.target_scene_id as string,
-        position: {
-          yaw: hotspot.yaw,
-          pitch: hotspot.pitch,
-        },
-        data: { label: hotspot.label },
-      }));
-
-    const markers = sceneHotspots
-      .filter((hotspot) => hotspot.type === "info")
-      .map((hotspot) => hotspotToMarkerConfig(hotspot, false));
+    // View mode: style every hotspot as a MarkersPlugin marker (same HTML as
+    // edit). Link navigation is handled in select-marker → setCurrentNode so
+    // appearance stays identical. Empty VT links avoids the default 3D arrows.
+    const markers = sceneHotspots.map((hotspot) =>
+      hotspotToMarkerConfig(hotspot, false, scenes),
+    );
 
     return {
       id: scene.id,
@@ -185,7 +212,7 @@ function buildNodes(
       thumbnail: scene.thumbnail_path
         ? publicUrl(scene.thumbnail_path)
         : undefined,
-      links,
+      links: [] as VirtualTourLink[],
       markers,
       data: nodeData,
     };
@@ -215,16 +242,13 @@ function serializeNodesKey(
       thumbnail: node.thumbnail,
       name: node.name,
       data: node.data,
-      links: (node.links ?? []).map((link) => ({
-        nodeId: link.nodeId,
-        position: link.position,
-        data: link.data,
-      })),
       markers: (node.markers ?? []).map((marker) => ({
         id: marker.id,
         position: marker.position,
-        data: marker.data,
+        html: marker.html,
+        size: marker.size,
         tooltip: marker.tooltip,
+        data: marker.data,
       })),
     })),
   );
@@ -234,6 +258,7 @@ function syncEditMarkers(
   markers: MarkersPlugin,
   sceneHotspots: PanoramaViewerHotspot[],
   highlightedHotspotId: string | null | undefined,
+  scenes: PanoramaViewerScene[],
 ) {
   const existingIds = new Set(markers.getMarkers().map((marker) => marker.id));
   const nextIds = new Set(sceneHotspots.map((hotspot) => hotspot.id));
@@ -242,6 +267,7 @@ function syncEditMarkers(
     const config = hotspotToMarkerConfig(
       hotspot,
       hotspot.id === highlightedHotspotId,
+      scenes,
     );
     if (existingIds.has(hotspot.id)) {
       markers.updateMarker(config);
@@ -426,11 +452,20 @@ export function PanoramaViewer({
           type?: string;
           label?: string | null;
           content?: string | null;
+          targetSceneId?: string | null;
         };
       };
     }) => {
       if (modeRef.current === "edit") {
         onMarkerSelectRef.current?.(event.marker.id);
+        return;
+      }
+
+      if (
+        event.marker.data?.type === "link" &&
+        event.marker.data.targetSceneId
+      ) {
+        void tour.setCurrentNode(event.marker.data.targetSceneId);
         return;
       }
 
@@ -455,6 +490,7 @@ export function PanoramaViewer({
         markersPlugin,
         hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
         highlightedHotspotId,
+        scenes,
       );
     }
 
@@ -551,12 +587,14 @@ export function PanoramaViewer({
       markersPlugin,
       hotspots.filter((hotspot) => hotspot.scene_id === currentSceneId),
       highlightedHotspotId,
+      scenes,
     );
   }, [
     mode,
     hasScenes,
     currentSceneId,
     hotspots,
+    scenes,
     selectedHotspotId,
     movingHotspotId,
     highlightedHotspotId,

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
+  applyHotspotStyleToTour,
   deleteHotspot,
   updateHotspot,
 } from "@/app/dashboard/tours/[id]/actions";
@@ -23,10 +24,24 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  HOTSPOT_ANIMATIONS,
+  HOTSPOT_SHAPES,
+  LABEL_VISIBILITIES,
+  PRESET_COLORS,
+  SHAPE_DISPLAY_NAMES,
+  SHAPE_PREVIEW_SVG,
+  clampHotspotSize,
+  sanitizeHotspotColor,
+  type HotspotAnimation,
+  type HotspotShape,
+  type LabelVisibility,
+} from "@/lib/hotspot-styles";
 import { cn } from "@/lib/utils";
 import type { Hotspot, Scene } from "@/types";
 
 type HotspotPanelProps = {
+  tourId: string;
   scenes: Scene[];
   hotspots: Hotspot[];
   activeSceneId: string | null;
@@ -39,6 +54,7 @@ type HotspotPanelProps = {
 };
 
 export function HotspotPanel({
+  tourId,
   scenes,
   hotspots,
   activeSceneId,
@@ -176,6 +192,7 @@ export function HotspotPanel({
         {selected && selected.scene_id === activeSceneId ? (
           <HotspotEditor
             key={selected.id}
+            tourId={tourId}
             hotspot={selected}
             scenes={scenes}
             onHotspotsChange={onHotspotsChange}
@@ -218,6 +235,7 @@ export function HotspotPanel({
 }
 
 type HotspotEditorProps = {
+  tourId: string;
   hotspot: Hotspot;
   scenes: Scene[];
   allHotspots: Hotspot[];
@@ -227,6 +245,7 @@ type HotspotEditorProps = {
 };
 
 function HotspotEditor({
+  tourId,
   hotspot,
   scenes,
   allHotspots,
@@ -240,7 +259,21 @@ function HotspotEditor({
   const [targetSceneId, setTargetSceneId] = useState(
     hotspot.target_scene_id ?? "",
   );
+  const [shape, setShape] = useState<HotspotShape>(
+    (hotspot.style_shape as HotspotShape) || "arrow",
+  );
+  const [color, setColor] = useState(sanitizeHotspotColor(hotspot.style_color));
+  const [size, setSize] = useState(clampHotspotSize(hotspot.style_size));
+  const [animation, setAnimation] = useState<HotspotAnimation>(
+    (hotspot.style_animation as HotspotAnimation) || "pulse",
+  );
+  const [labelVisibility, setLabelVisibility] = useState<LabelVisibility>(
+    (hotspot.label_visibility as LabelVisibility) || "hover",
+  );
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [applying, setApplying] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const styleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const otherScenes = useMemo(
     () => scenes.filter((scene) => scene.id !== hotspot.scene_id),
@@ -251,11 +284,29 @@ function HotspotEditor({
     setLabel(hotspot.label ?? "");
     setContent(hotspot.content ?? "");
     setTargetSceneId(hotspot.target_scene_id ?? "");
-  }, [hotspot.id, hotspot.label, hotspot.content, hotspot.target_scene_id]);
+    setShape((hotspot.style_shape as HotspotShape) || "arrow");
+    setColor(sanitizeHotspotColor(hotspot.style_color));
+    setSize(clampHotspotSize(hotspot.style_size));
+    setAnimation((hotspot.style_animation as HotspotAnimation) || "pulse");
+    setLabelVisibility(
+      (hotspot.label_visibility as LabelVisibility) || "hover",
+    );
+  }, [
+    hotspot.id,
+    hotspot.label,
+    hotspot.content,
+    hotspot.target_scene_id,
+    hotspot.style_shape,
+    hotspot.style_color,
+    hotspot.style_size,
+    hotspot.style_animation,
+    hotspot.label_visibility,
+  ]);
 
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (styleDebounceRef.current) clearTimeout(styleDebounceRef.current);
     };
   }, []);
 
@@ -283,6 +334,19 @@ function HotspotEditor({
     }, 600);
   }
 
+  function scheduleStyleSave(partial: {
+    style_shape?: HotspotShape;
+    style_color?: string;
+    style_size?: number;
+    style_animation?: HotspotAnimation;
+    label_visibility?: LabelVisibility;
+  }) {
+    if (styleDebounceRef.current) clearTimeout(styleDebounceRef.current);
+    styleDebounceRef.current = setTimeout(() => {
+      void run(() => updateHotspot(hotspot.id, partial));
+    }, 400);
+  }
+
   async function saveTarget(nextTarget: string) {
     const previous = allHotspots;
     patchLocal({ target_scene_id: nextTarget });
@@ -293,6 +357,33 @@ function HotspotEditor({
       onHotspotsChange(previous);
       toast.error("Could not update target scene");
     }
+  }
+
+  async function handleApplyToAll() {
+    setApplying(true);
+    const previous = allHotspots;
+    const styled = {
+      style_shape: shape,
+      style_color: color,
+      style_size: size,
+      style_animation: animation,
+      label_visibility: labelVisibility,
+    };
+    onHotspotsChange(
+      allHotspots.map((item) => ({
+        ...item,
+        ...styled,
+      })),
+    );
+    const ok = await run(() => applyHotspotStyleToTour(tourId, styled));
+    setApplying(false);
+    if (!ok) {
+      onHotspotsChange(previous);
+      toast.error("Could not apply style to all hotspots");
+      return;
+    }
+    setApplyOpen(false);
+    toast.success("Style applied to all hotspots");
   }
 
   return (
@@ -364,6 +455,189 @@ function HotspotEditor({
           />
         </div>
       ) : null}
+
+      <div className="border-t border-foreground/10 pt-3">
+        <p className="mb-2 text-xs font-medium text-muted-foreground uppercase">
+          Style
+        </p>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>Shape</Label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {HOTSPOT_SHAPES.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  title={SHAPE_DISPLAY_NAMES[key]}
+                  aria-label={SHAPE_DISPLAY_NAMES[key]}
+                  aria-pressed={shape === key}
+                  className={cn(
+                    "flex flex-col items-center gap-1 rounded-md border px-1 py-1.5 text-[10px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    shape === key
+                      ? "border-foreground bg-muted"
+                      : "border-transparent hover:bg-muted/60",
+                  )}
+                  onClick={() => {
+                    setShape(key);
+                    patchLocal({ style_shape: key });
+                    scheduleStyleSave({ style_shape: key });
+                  }}
+                >
+                  <span
+                    className="text-foreground"
+                    dangerouslySetInnerHTML={{
+                      __html: SHAPE_PREVIEW_SVG[key],
+                    }}
+                  />
+                  <span className="truncate">{SHAPE_DISPLAY_NAMES[key]}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Color</Label>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {PRESET_COLORS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  aria-label={`Color ${preset}`}
+                  aria-pressed={color.toUpperCase() === preset.toUpperCase()}
+                  className={cn(
+                    "size-7 rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    color.toUpperCase() === preset.toUpperCase()
+                      ? "ring-2 ring-ring ring-offset-1"
+                      : "border-foreground/20",
+                  )}
+                  style={{ backgroundColor: preset }}
+                  onClick={() => {
+                    const next = sanitizeHotspotColor(preset);
+                    setColor(next);
+                    patchLocal({ style_color: next });
+                    scheduleStyleSave({ style_color: next });
+                  }}
+                />
+              ))}
+              <input
+                type="color"
+                aria-label="Custom color"
+                value={color}
+                className="size-7 cursor-pointer rounded-md border border-foreground/20 bg-transparent p-0"
+                onChange={(event) => {
+                  const next = sanitizeHotspotColor(event.target.value);
+                  setColor(next);
+                  patchLocal({ style_color: next });
+                  scheduleStyleSave({ style_color: next });
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`size-${hotspot.id}`}>Size ({size}px)</Label>
+            <input
+              id={`size-${hotspot.id}`}
+              type="range"
+              min={16}
+              max={128}
+              value={size}
+              className="w-full"
+              onChange={(event) => {
+                const next = clampHotspotSize(Number(event.target.value));
+                setSize(next);
+                patchLocal({ style_size: next });
+                scheduleStyleSave({ style_size: next });
+              }}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Animation</Label>
+            <div className="flex flex-wrap gap-1">
+              {HOTSPOT_ANIMATIONS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={animation === key}
+                  className={cn(
+                    "rounded-md px-2 py-1 text-xs capitalize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    animation === key
+                      ? "bg-foreground text-background"
+                      : "bg-muted hover:bg-muted/80",
+                  )}
+                  onClick={() => {
+                    setAnimation(key);
+                    patchLocal({ style_animation: key });
+                    scheduleStyleSave({ style_animation: key });
+                  }}
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Label visibility</Label>
+            <div className="flex flex-wrap gap-1">
+              {LABEL_VISIBILITIES.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={labelVisibility === key}
+                  className={cn(
+                    "rounded-md px-2 py-1 text-xs capitalize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    labelVisibility === key
+                      ? "bg-foreground text-background"
+                      : "bg-muted hover:bg-muted/80",
+                  )}
+                  onClick={() => {
+                    setLabelVisibility(key);
+                    patchLocal({ label_visibility: key });
+                    scheduleStyleSave({ label_visibility: key });
+                  }}
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setApplyOpen(true)}
+          >
+            Apply this style to all hotspots…
+          </Button>
+        </div>
+      </div>
+
+      <AlertDialog open={applyOpen} onOpenChange={setApplyOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apply style to every hotspot?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This overwrites shape, color, size, animation, and label
+              visibility on all hotspots in this tour. It cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={applying}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={applying}
+              onClick={() => {
+                void handleApplyToAll();
+              }}
+            >
+              {applying ? "Applying…" : "Apply to all"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

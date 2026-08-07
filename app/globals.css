@@ -140,3 +140,69 @@
     }
   }
 }
+
+/* Hotspot marker animations — only when motion is OK */
+@media (prefers-reduced-motion: no-preference) {
+  .st-hotspot-anim--pulse {
+    animation: st-hotspot-pulse 2s ease-in-out infinite;
+  }
+  .st-hotspot-anim--bounce {
+    animation: st-hotspot-bounce 1.4s ease-in-out infinite;
+  }
+  .st-hotspot-anim--float {
+    animation: st-hotspot-float 3.2s ease-in-out infinite;
+  }
+  .st-hotspot-anim--pulse .st-hotspot-pulse-ring {
+    animation: st-hotspot-ring 2s ease-out infinite;
+    transform-origin: center;
+  }
+}
+
+.st-hotspot--selected {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: 9999px;
+}
+
+@keyframes st-hotspot-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.88;
+  }
+}
+
+@keyframes st-hotspot-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes st-hotspot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes st-hotspot-ring {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
