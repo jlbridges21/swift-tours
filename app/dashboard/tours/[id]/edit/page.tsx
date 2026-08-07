@@ -4,7 +4,12 @@ import { notFound, redirect } from "next/navigation";
 import { SceneList } from "@/components/scenes/scene-list";
 import { SceneUploader } from "@/components/scenes/scene-uploader";
 import { Button } from "@/components/ui/button";
-import { getTourById, listScenesForTour } from "@/lib/queries/tours";
+import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
+import {
+  getTourById,
+  listHotspotsForTour,
+  listScenesForTour,
+} from "@/lib/queries/tours";
 import { createClient } from "@/lib/supabase/server";
 
 type EditTourPageProps = {
@@ -27,7 +32,10 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
     notFound();
   }
 
-  const scenes = await listScenesForTour(id);
+  const [scenes, hotspots] = await Promise.all([
+    listScenesForTour(id),
+    listHotspotsForTour(id),
+  ]);
   const nextPosition =
     scenes.reduce((max, scene) => Math.max(max, scene.position), -1) + 1;
 
@@ -45,6 +53,18 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
         </Button>
         <h1 className="text-2xl font-semibold tracking-tight">{tour.title}</h1>
       </div>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium">Preview</h2>
+        <div className="h-[60vh]">
+          <PanoramaViewer
+            scenes={scenes}
+            hotspots={hotspots}
+            startSceneId={tour.cover_scene_id ?? undefined}
+            mode="view"
+          />
+        </div>
+      </section>
 
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-medium">Upload scenes</h2>

@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import type { Scene, Tour } from "@/types";
+import type { Hotspot, Scene, Tour } from "@/types";
 
 export type TourListItem = Tour & {
   scene_count: number;
@@ -65,6 +65,35 @@ export async function listScenesForTour(tourId: string): Promise<Scene[]> {
     .select("*")
     .eq("tour_id", tourId)
     .order("position", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ?? [];
+}
+
+export async function listHotspotsForTour(tourId: string): Promise<Hotspot[]> {
+  const supabase = await createClient();
+
+  const { data: scenes, error: scenesError } = await supabase
+    .from("scenes")
+    .select("id")
+    .eq("tour_id", tourId);
+
+  if (scenesError) {
+    throw new Error(scenesError.message);
+  }
+
+  const sceneIds = (scenes ?? []).map((scene) => scene.id);
+  if (sceneIds.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("hotspots")
+    .select("*")
+    .in("scene_id", sceneIds);
 
   if (error) {
     throw new Error(error.message);
