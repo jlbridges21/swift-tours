@@ -263,3 +263,80 @@ export async function reorderScenes(
   revalidatePath(editorPath(tourId));
   return {};
 }
+
+export async function updateSceneInitialView(
+  sceneId: string,
+  yaw: number,
+  pitch: number,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+
+  if (!scene) {
+    return { error: "Scene not found." };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error) {
+    return { error: owned.error };
+  }
+
+  const { error } = await supabase
+    .from("scenes")
+    .update({
+      initial_yaw: yaw,
+      initial_pitch: pitch,
+    })
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath(editorPath(scene.tour_id));
+  return {};
+}
+
+export async function updateTourTitle(
+  tourId: string,
+  title: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.user) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const trimmed = title.trim();
+  if (!trimmed) {
+    return { error: "Title is required." };
+  }
+
+  const { error } = await owned.supabase
+    .from("tours")
+    .update({ title: trimmed })
+    .eq("id", tourId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidatePath(editorPath(tourId));
+  revalidatePath("/dashboard");
+  return {};
+}

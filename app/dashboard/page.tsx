@@ -6,7 +6,7 @@ export default async function DashboardPage() {
   const tours = await listTours();
 
   return (
-    <main className="flex flex-1 flex-col gap-6 p-6">
+    <main className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-6">
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight">Your tours</h1>
         <NewTourButton />

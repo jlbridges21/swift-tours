@@ -56,6 +56,8 @@ export type PanoramaViewerProps = {
   scenes: PanoramaViewerScene[];
   hotspots: PanoramaViewerHotspot[];
   startSceneId?: string;
+  /** Controlled active node — updates via setCurrentNode without rebuilding the viewer. */
+  currentSceneId?: string;
   mode: "view" | "edit";
   className?: string;
   onSceneChange?: (sceneId: string) => void;
@@ -166,6 +168,7 @@ export function PanoramaViewer({
   scenes,
   hotspots,
   startSceneId,
+  currentSceneId,
   mode,
   className,
   onSceneChange,
@@ -190,9 +193,10 @@ export function PanoramaViewer({
 
   const startScene = useMemo(() => {
     if (!hasScenes) return null;
-    const id = resolveStartId(scenes, startSceneId);
+    const preferred = currentSceneId ?? startSceneId;
+    const id = resolveStartId(scenes, preferred);
     return scenes.find((scene) => scene.id === id) ?? scenes[0];
-  }, [hasScenes, scenes, startSceneId]);
+  }, [hasScenes, scenes, startSceneId, currentSceneId]);
 
   // Instantiate once per "has scenes" lifetime. StrictMode double-mount is
   // handled by the cleanup calling viewer.destroy().
@@ -205,7 +209,7 @@ export function PanoramaViewer({
     setInfoOverlay(null);
 
     const nodes = buildNodes(scenes, hotspots);
-    const startId = resolveStartId(scenes, startSceneId);
+    const startId = resolveStartId(scenes, currentSceneId ?? startSceneId);
 
     const viewer = new Viewer({
       container: containerRef.current,
@@ -303,6 +307,23 @@ export function PanoramaViewer({
 
     tour.setNodes(nodes, nextStart);
   }, [scenes, hotspots, startSceneId, hasScenes]);
+
+  // Controlled scene selection from the parent (sidebar). Bail if already current
+  // so onSceneChange → setState → setCurrentNode cannot loop.
+  useEffect(() => {
+    if (!currentSceneId || !hasScenes) return;
+
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    const tour = viewer.getPlugin<VirtualTourPlugin>(VirtualTourPlugin);
+    if (!tour) return;
+
+    const currentId = tour.getCurrentNode()?.id;
+    if (currentId === currentSceneId) return;
+
+    void tour.setCurrentNode(currentSceneId);
+  }, [currentSceneId, hasScenes]);
 
   // Edit-mode panorama click → yaw/pitch in radians.
   useEffect(() => {

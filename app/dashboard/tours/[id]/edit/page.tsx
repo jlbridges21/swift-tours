@@ -1,10 +1,6 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
-import { SceneList } from "@/components/scenes/scene-list";
-import { SceneUploader } from "@/components/scenes/scene-uploader";
-import { Button } from "@/components/ui/button";
-import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
+import { TourEditor } from "@/components/editor/tour-editor";
 import {
   getTourById,
   listHotspotsForTour,
@@ -36,49 +32,13 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
     listScenesForTour(id),
     listHotspotsForTour(id),
   ]);
-  const nextPosition =
-    scenes.reduce((max, scene) => Math.max(max, scene.position), -1) + 1;
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-6">
-      <div className="flex flex-col gap-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-fit px-0"
-          nativeButton={false}
-          render={<Link href="/dashboard" />}
-        >
-          ← Back to tours
-        </Button>
-        <h1 className="text-2xl font-semibold tracking-tight">{tour.title}</h1>
-      </div>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium">Preview</h2>
-        <div className="h-[60vh]">
-          <PanoramaViewer
-            scenes={scenes}
-            hotspots={hotspots}
-            startSceneId={tour.cover_scene_id ?? undefined}
-            mode="view"
-          />
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium">Upload scenes</h2>
-        <SceneUploader
-          tourId={tour.id}
-          userId={user.id}
-          nextPosition={nextPosition}
-        />
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium">Scenes</h2>
-        <SceneList tourId={tour.id} scenes={scenes} />
-      </section>
-    </main>
+    <TourEditor
+      tour={tour}
+      scenes={scenes}
+      hotspots={hotspots}
+      userId={user.id}
+    />
   );
 }
