@@ -15,6 +15,12 @@ export type EmbedChromeOptions = {
   showFullscreen: boolean;
   autorotate: boolean;
   startSceneId: string | null;
+  /** When false, hide gyro control even if the tour enables it. */
+  showGyro: boolean;
+  /** When false, hide VR/stereo control even if the tour enables it. */
+  showVr: boolean;
+  /** When false, skip little-planet intro. */
+  showIntro: boolean;
 };
 
 export const DEFAULT_EMBED_CHROME: EmbedChromeOptions = {
@@ -25,6 +31,9 @@ export const DEFAULT_EMBED_CHROME: EmbedChromeOptions = {
   showFullscreen: true,
   autorotate: false,
   startSceneId: null,
+  showGyro: true,
+  showVr: true,
+  showIntro: true,
 };
 
 function isOff(value: string | null | undefined): boolean {
@@ -66,6 +75,9 @@ export function parseEmbedSearchParams(
     showFullscreen: !isOff(searchParams.get("fs")),
     autorotate: isOn(searchParams.get("autorotate")),
     startSceneId,
+    showGyro: !isOff(searchParams.get("gyro")),
+    showVr: !isOff(searchParams.get("vr")),
+    showIntro: !isOff(searchParams.get("intro")),
   };
 }
 

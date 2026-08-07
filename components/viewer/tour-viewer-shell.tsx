@@ -4,13 +4,21 @@ import type { Viewer } from "@photo-sphere-viewer/core";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { FullscreenToggle } from "@/components/viewer/fullscreen-toggle";
+import { GyroToggle } from "@/components/viewer/gyro-toggle";
 import { PanoramaViewer } from "@/components/viewer/panorama-viewer-client";
 import { SceneStrip } from "@/components/viewer/scene-strip";
 import { ShareButton } from "@/components/viewer/share-button";
 import { TourViewTracker } from "@/components/viewer/tour-view-tracker";
 import { useAutorotate } from "@/components/viewer/use-autorotate";
+import { VrToggle } from "@/components/viewer/vr-toggle";
 import { resolvePanoramaPath } from "@/lib/gl-capabilities";
 import { publicUrl } from "@/lib/storage";
+import {
+  DEFAULT_VIEWER_EFFECTS,
+  isIntroEffect,
+  isTransitionEffect,
+  type ViewerEffectsSettings,
+} from "@/lib/viewer-effects";
 import type { Hotspot, Scene, Tour } from "@/types";
 
 export type TourViewerShellProps = {
@@ -40,6 +48,14 @@ export type TourViewerShellProps = {
   startSceneId?: string | null;
   /** Post ready/dimensions to parent (iframe embeds). */
   embedMode?: boolean;
+  /** Embed/query override: allow gyroscope chrome. Default true. */
+  allowGyro?: boolean;
+  /** Embed/query override: allow VR chrome. Default true. */
+  allowVr?: boolean;
+  /** Embed/query override: allow little-planet intro. Default true. */
+  allowIntro?: boolean;
+  /** Increment to replay little-planet intro. */
+  introReplayNonce?: number;
 };
 
 function resolveStartSceneId(
@@ -55,6 +71,24 @@ function resolveStartSceneId(
     if (cover) return cover.id;
   }
   return scenes[0]?.id;
+}
+
+function effectsFromTour(tour: Tour): ViewerEffectsSettings {
+  return {
+    introEffect: isIntroEffect(tour.intro_effect)
+      ? tour.intro_effect
+      : DEFAULT_VIEWER_EFFECTS.introEffect,
+    transition: {
+      effect: isTransitionEffect(tour.transition_effect)
+        ? tour.transition_effect
+        : DEFAULT_VIEWER_EFFECTS.transition.effect,
+      speed: tour.transition_speed ?? DEFAULT_VIEWER_EFFECTS.transition.speed,
+      zoom: tour.transition_zoom ?? true,
+      rotation: tour.transition_rotation ?? true,
+    },
+    gyroscopeEnabled: tour.gyroscope_enabled ?? true,
+    vrEnabled: tour.vr_enabled ?? true,
+  };
 }
 
 function nextLikelyPanorama(
@@ -102,6 +136,10 @@ export function TourViewerShell({
   branded = true,
   startSceneId: startSceneOverride = null,
   embedMode = false,
+  allowGyro = true,
+  allowVr = true,
+  allowIntro = true,
+  introReplayNonce = 0,
 }: TourViewerShellProps) {
   const effectiveShowTitle = branded && showTitle;
   const effectiveShowShare = branded && showShare;
@@ -118,13 +156,25 @@ export function TourViewerShell({
 
   useAutorotate(viewer, autorotate);
 
+  const effects = useMemo(() => effectsFromTour(tour), [tour]);
+  const coverId = tour.cover_scene_id ?? scenes[0]?.id ?? null;
+  // Skip intro when starting on a non-cover scene (?start=) or intro=0.
+  const runIntro =
+    allowIntro &&
+    effects.introEffect === "little_planet" &&
+    (!startSceneOverride || startSceneOverride === coverId);
+
   const currentScene = scenes.find((s) => s.id === currentSceneId) ?? scenes[0];
   const preloadUrl = firstSceneReady
     ? nextLikelyPanorama(currentSceneId, hotspots, scenes)
     : null;
 
   const showTopChrome =
-    effectiveShowTitle || effectiveShowShare || showFullscreen;
+    effectiveShowTitle ||
+    effectiveShowShare ||
+    showFullscreen ||
+    (allowGyro && effects.gyroscopeEnabled) ||
+    (allowVr && effects.vrEnabled);
 
   useEffect(() => {
     if (!preloadUrl) return;
@@ -196,6 +246,9 @@ export function TourViewerShell({
             opacity: tour.nadir_opacity,
             rotation: tour.nadir_rotation,
           }}
+          viewerEffects={effects}
+          runIntro={runIntro}
+          introReplayNonce={introReplayNonce}
           onSceneChange={(id) => {
             setCurrentSceneId(id);
             setFirstSceneReady(true);
@@ -232,6 +285,15 @@ export function TourViewerShell({
             )}
 
             <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+              {allowGyro ? (
+                <GyroToggle
+                  viewer={viewer}
+                  enabled={effects.gyroscopeEnabled}
+                />
+              ) : null}
+              {allowVr ? (
+                <VrToggle viewer={viewer} enabled={effects.vrEnabled} />
+              ) : null}
               {effectiveShowShare ? (
                 <ShareButton title={tour.title} text={tour.description} />
               ) : null}

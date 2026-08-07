@@ -7,10 +7,12 @@
  */
 
 import { Viewer, events } from "@photo-sphere-viewer/core";
+import { GyroscopePlugin } from "@photo-sphere-viewer/gyroscope-plugin";
 import {
   MarkersPlugin,
   type MarkerConfig,
 } from "@photo-sphere-viewer/markers-plugin";
+import { StereoPlugin } from "@photo-sphere-viewer/stereo-plugin";
 import {
   VirtualTourPlugin,
   type VirtualTourLink,
@@ -24,15 +26,19 @@ import {
   type CSSProperties,
 } from "react";
 
-import { publicUrl } from "@/lib/storage";
-import {
-  getMaxTextureSize,
-  resolvePanoramaPath,
-} from "@/lib/gl-capabilities";
 import {
   adjustmentFilter,
   PSV_CANVAS_SELECTOR,
 } from "@/lib/adjustments";
+import {
+  applyLittlePlanetPose,
+  runLittlePlanetIntro,
+  type LittlePlanetHandle,
+} from "@/lib/little-planet";
+import {
+  getMaxTextureSize,
+  resolvePanoramaPath,
+} from "@/lib/gl-capabilities";
 import {
   buildHotspotMarkerHtml,
   clampHotspotSize,
@@ -45,7 +51,14 @@ import {
   isNadirMarkerId,
   NADIR_MARKER_ID,
 } from "@/lib/nadir";
+import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_VIEWER_EFFECTS,
+  prefersReducedMotion,
+  resolveTransitionOptions,
+  type ViewerEffectsSettings,
+} from "@/lib/viewer-effects";
 import type { Hotspot, Scene } from "@/types";
 
 import { InfoHotspotPopover } from "@/components/viewer/info-hotspot-popover";
@@ -122,6 +135,15 @@ export type PanoramaViewerProps = {
   closeInfoPopoverNonce?: number;
   /** Floor patch size / opacity / spin — applied at render time. */
   nadirSettings?: PanoramaNadirSettings;
+  /** Intro / transition / gyro-VR tour settings. */
+  viewerEffects?: ViewerEffectsSettings;
+  /**
+   * When false, skip little-planet intro (e.g. ?start= override or intro=0).
+   * Default true when intro_effect is little_planet.
+   */
+  runIntro?: boolean;
+  /** Increment to replay the little-planet intro without remounting. */
+  introReplayNonce?: number;
   /**
    * When true, temporarily clear the CSS filter (press-and-hold before/after).
    * Same code path in edit and view — only the editor sets this.
@@ -464,6 +486,9 @@ export function PanoramaViewer({
   ariaLabel,
   closeInfoPopoverNonce = 0,
   nadirSettings,
+  viewerEffects = DEFAULT_VIEWER_EFFECTS,
+  runIntro = true,
+  introReplayNonce = 0,
   adjustmentsBypassed = false,
   onSceneChange,
   onPanoramaClick,
@@ -491,6 +516,10 @@ export function PanoramaViewer({
   const draggingIdRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const hotspotsRef = useRef(hotspots);
+  const viewerEffectsRef = useRef(viewerEffects);
+  const introPendingRef = useRef(false);
+  const introHandleRef = useRef<LittlePlanetHandle | null>(null);
+  const introRanRef = useRef(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadTimedOut, setLoadTimedOut] = useState(false);
@@ -506,6 +535,7 @@ export function PanoramaViewer({
   onInfoPopoverOpenChangeRef.current = onInfoPopoverOpenChange;
   onViewerReadyRef.current = onViewerReady;
   hotspotsRef.current = hotspots;
+  viewerEffectsRef.current = viewerEffects;
 
   const hasScenes = scenes.length > 0;
   const highlightedHotspotId = selectedHotspotId;
@@ -547,6 +577,14 @@ export function PanoramaViewer({
     let cancelled = false;
     let loadTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
+    const wantIntro =
+      runIntro &&
+      viewerEffects.introEffect === "little_planet" &&
+      !prefersReducedMotion();
+    introPendingRef.current = wantIntro;
+    introRanRef.current = false;
+    introHandleRef.current = null;
+
     // Create the viewer WITHOUT feeding nodes into plugin config. Plugin.init()
     // would otherwise call setNodes→setCurrentNode before our React effects run;
     // the controlled currentSceneId effect then aborts that in-flight load
@@ -554,8 +592,12 @@ export function PanoramaViewer({
     const viewer = new Viewer({
       container: containerRef.current,
       navbar: ["zoom", "move", "fullscreen"],
-      defaultYaw: startScene.initial_yaw,
-      defaultPitch: startScene.initial_pitch,
+      // Little-planet opens looking straight down, fisheye on, fully zoomed out.
+      // Normal tours use the start scene's stored landing angles.
+      defaultYaw: wantIntro ? 0 : startScene.initial_yaw,
+      defaultPitch: wantIntro ? -Math.PI / 2 : startScene.initial_pitch,
+      defaultZoomLvl: wantIntro ? 0 : 50,
+      fisheye: wantIntro ? 1 : 0,
       mousewheel: true,
       mousemove: true,
       touchmoveTwoFingers: false,
@@ -563,9 +605,31 @@ export function PanoramaViewer({
         MarkersPlugin.withConfig({
           clickEventOnMarker: false,
         }),
+        // Gyroscope before Stereo — StereoPlugin requires it at init.
+        GyroscopePlugin.withConfig({
+          touchmove: true,
+          roll: true,
+        }),
+        StereoPlugin.withConfig(),
         VirtualTourPlugin.withConfig({
           dataMode: "client",
           positionMode: "manual",
+          transitionOptions: (_to, _from, fromLink) => {
+            const resolved = resolveTransitionOptions(
+              viewerEffectsRef.current.transition,
+            );
+            return {
+              showLoader: resolved.showLoader,
+              effect: resolved.effect,
+              speed: resolved.speed,
+              rotation: resolved.rotation,
+              // Zoom-through only when navigating via a link (hotspot).
+              zoomTo:
+                resolved.zoomTo !== undefined && fromLink
+                  ? resolved.zoomTo
+                  : undefined,
+            };
+          },
         }),
       ],
     });
@@ -599,6 +663,31 @@ export function PanoramaViewer({
       }, 60_000);
     };
 
+    const startIntroIfNeeded = (node: VirtualTourNode) => {
+      if (!introPendingRef.current || introRanRef.current || cancelled) return;
+      introPendingRef.current = false;
+      introRanRef.current = true;
+
+      const data = node.data as
+        | { initialYaw?: number; initialPitch?: number }
+        | undefined;
+      const target = {
+        yaw:
+          typeof data?.initialYaw === "number"
+            ? data.initialYaw
+            : startScene.initial_yaw,
+        pitch:
+          typeof data?.initialPitch === "number"
+            ? data.initialPitch
+            : startScene.initial_pitch,
+        zoom: 50,
+      };
+
+      // Ensure little-planet pose in case something moved the camera on load.
+      applyLittlePlanetPose(viewer);
+      introHandleRef.current = runLittlePlanetIntro(viewer, target);
+    };
+
     const handleNodeChanged = (event: {
       node: VirtualTourNode;
       data?: { fromLink?: unknown };
@@ -611,9 +700,28 @@ export function PanoramaViewer({
       setLoadError(null);
       setInfoOverlay(null);
       onSceneChangeRef.current?.(event.node.id);
+
+      // First-scene intro owns the camera — skip applyNodeInitialView once.
+      if (introPendingRef.current && !event.data?.fromLink) {
+        // Only start once the first texture is ready (never during bootstrap).
+        if (viewer.state.ready) {
+          startIntroIfNeeded(event.node);
+        }
+        return;
+      }
+
       applyNodeInitialView(viewer, event.node, event.data?.fromLink);
     };
     tour.addEventListener("node-changed", handleNodeChanged);
+
+    // Intro runs only after the first panorama has fully loaded — never during
+    // the setNodes bootstrap texture fetch. Also retried from node-changed.
+    const handleReady = () => {
+      if (cancelled) return;
+      const node = tour.getCurrentNode();
+      if (node) startIntroIfNeeded(node);
+    };
+    viewer.addEventListener("ready", handleReady);
 
     const handlePanoramaError = (event: { error: Error }) => {
       if (cancelled) return;
@@ -710,6 +818,8 @@ export function PanoramaViewer({
       clearLoadTimeout();
       bootstrappingRef.current = false;
       bootstrapSceneIdRef.current = null;
+      introHandleRef.current?.cancel();
+      introHandleRef.current = null;
       // Invalidate in-flight setCurrentNode chains before destroy so they
       // abort cleanly instead of calling loadNode on a deleted datasource
       // (React Strict Mode remount).
@@ -724,9 +834,48 @@ export function PanoramaViewer({
       nodesKeyRef.current = "";
     };
     // Recreate on empty↔non-empty and explicit retry. Scene/hotspot updates
-    // go through the nodes effect below.
+    // go through the nodes effect below. Do NOT recreate for intro/transition
+    // setting changes — that would reintroduce the first-scene hang risk.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasScenes, retryNonce]);
+
+  // Replay little-planet intro without remounting the viewer.
+  useEffect(() => {
+    if (introReplayNonce <= 0) return;
+    const viewer = viewerRef.current;
+    if (!viewer || prefersReducedMotion()) return;
+    if (viewerEffects.introEffect !== "little_planet") return;
+
+    const tour = viewer.getPlugin<VirtualTourPlugin>(VirtualTourPlugin);
+    const node = tour?.getCurrentNode();
+    const data = node?.data as
+      | { initialYaw?: number; initialPitch?: number }
+      | undefined;
+    const scene =
+      scenes.find((s) => s.id === (currentSceneId ?? startSceneId)) ??
+      scenes[0];
+    if (!scene) return;
+
+    introHandleRef.current?.cancel();
+    applyLittlePlanetPose(viewer);
+    introHandleRef.current = runLittlePlanetIntro(viewer, {
+      yaw:
+        typeof data?.initialYaw === "number"
+          ? data.initialYaw
+          : scene.initial_yaw,
+      pitch:
+        typeof data?.initialPitch === "number"
+          ? data.initialPitch
+          : scene.initial_pitch,
+      zoom: 50,
+    });
+  }, [
+    introReplayNonce,
+    viewerEffects.introEffect,
+    scenes,
+    currentSceneId,
+    startSceneId,
+  ]);
 
   // Update tour nodes when scenes (or view-mode hotspot graph) change.
   useEffect(() => {

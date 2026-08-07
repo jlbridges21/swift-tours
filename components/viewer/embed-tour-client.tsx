@@ -38,6 +38,9 @@ export function EmbedTourClient({
       showFullscreen={chrome.showFullscreen}
       autorotate={chrome.autorotate}
       startSceneId={chrome.startSceneId}
+      allowGyro={chrome.showGyro}
+      allowVr={chrome.showVr}
+      allowIntro={chrome.showIntro}
     />
   );
 }

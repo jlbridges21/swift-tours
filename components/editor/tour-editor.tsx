@@ -48,6 +48,11 @@ import {
 } from "@/lib/hotspot-styles";
 import { isNadirMarkerId } from "@/lib/nadir";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_VIEWER_EFFECTS,
+  isIntroEffect,
+  isTransitionEffect,
+} from "@/lib/viewer-effects";
 import type { Hotspot, Scene, Tour } from "@/types";
 
 type TourEditorProps = {
@@ -611,6 +616,24 @@ function TourEditorInner({
                   opacity: nadir.nadir_opacity,
                   rotation: nadir.nadir_rotation,
                 }}
+                viewerEffects={{
+                  introEffect: isIntroEffect(tour.intro_effect)
+                    ? tour.intro_effect
+                    : DEFAULT_VIEWER_EFFECTS.introEffect,
+                  transition: {
+                    effect: isTransitionEffect(tour.transition_effect)
+                      ? tour.transition_effect
+                      : DEFAULT_VIEWER_EFFECTS.transition.effect,
+                    speed:
+                      tour.transition_speed ??
+                      DEFAULT_VIEWER_EFFECTS.transition.speed,
+                    zoom: tour.transition_zoom ?? true,
+                    rotation: tour.transition_rotation ?? true,
+                  },
+                  gyroscopeEnabled: tour.gyroscope_enabled ?? true,
+                  vrEnabled: tour.vr_enabled ?? true,
+                }}
+                runIntro={false}
                 adjustmentsBypassed={adjustmentsBypassed}
                 onInfoPopoverOpenChange={setInfoPopoverOpen}
                 onSceneChange={setActiveSceneId}

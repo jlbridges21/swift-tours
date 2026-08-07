@@ -1,6 +1,6 @@
 /**
  * Placeholder Database types matching the schema in
- * supabase/migrations/0001_initial_schema.sql (+ 0002–0008).
+ * supabase/migrations/0001_initial_schema.sql (+ 0002–0009).
  *
  * Overwrite this file after applying migrations:
  *
@@ -39,6 +39,13 @@ export type Database = {
           nadir_opacity: number;
           nadir_rotation: number;
           nadir_feather: number;
+          intro_effect: string;
+          transition_effect: string;
+          transition_speed: number;
+          transition_zoom: boolean;
+          transition_rotation: boolean;
+          gyroscope_enabled: boolean;
+          vr_enabled: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -60,6 +67,13 @@ export type Database = {
           nadir_opacity?: number;
           nadir_rotation?: number;
           nadir_feather?: number;
+          intro_effect?: string;
+          transition_effect?: string;
+          transition_speed?: number;
+          transition_zoom?: boolean;
+          transition_rotation?: boolean;
+          gyroscope_enabled?: boolean;
+          vr_enabled?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -81,6 +95,13 @@ export type Database = {
           nadir_opacity?: number;
           nadir_rotation?: number;
           nadir_feather?: number;
+          intro_effect?: string;
+          transition_effect?: string;
+          transition_speed?: number;
+          transition_zoom?: boolean;
+          transition_rotation?: boolean;
+          gyroscope_enabled?: boolean;
+          vr_enabled?: boolean;
           created_at?: string;
           updated_at?: string;
         };

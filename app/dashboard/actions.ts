@@ -8,6 +8,10 @@ import { isNadirLogoSource, isNadirType } from "@/lib/nadir";
 import { generateSlug } from "@/lib/slug";
 import { sceneObjectPaths } from "@/lib/storage";
 import { createClient } from "@/lib/supabase/server";
+import {
+  isIntroEffect,
+  isTransitionEffect,
+} from "@/lib/viewer-effects";
 import type { HotspotInsert, SceneInsert, TourInsert } from "@/types";
 
 export type ActionResult = {
@@ -77,6 +81,13 @@ export async function updateTour(
     is_public: boolean;
     default_hotspot_shape?: string;
     default_hotspot_color?: string;
+    intro_effect?: string;
+    transition_effect?: string;
+    transition_speed?: number;
+    transition_zoom?: boolean;
+    transition_rotation?: boolean;
+    gyroscope_enabled?: boolean;
+    vr_enabled?: boolean;
   },
 ): Promise<ActionResult> {
   const supabase = await createClient();
@@ -105,6 +116,24 @@ export async function updateTour(
   ) {
     return { error: "Default color must be a hex value like #FFFFFF." };
   }
+  if (
+    input.intro_effect !== undefined &&
+    !isIntroEffect(input.intro_effect)
+  ) {
+    return { error: "Invalid intro effect." };
+  }
+  if (
+    input.transition_effect !== undefined &&
+    !isTransitionEffect(input.transition_effect)
+  ) {
+    return { error: "Invalid transition effect." };
+  }
+  if (
+    input.transition_speed !== undefined &&
+    (input.transition_speed < 300 || input.transition_speed > 5000)
+  ) {
+    return { error: "Transition speed must be between 300 and 5000 ms." };
+  }
 
   const { data: tour, error } = await supabase
     .from("tours")
@@ -117,6 +146,27 @@ export async function updateTour(
         : {}),
       ...(input.default_hotspot_color !== undefined
         ? { default_hotspot_color: input.default_hotspot_color }
+        : {}),
+      ...(input.intro_effect !== undefined
+        ? { intro_effect: input.intro_effect }
+        : {}),
+      ...(input.transition_effect !== undefined
+        ? { transition_effect: input.transition_effect }
+        : {}),
+      ...(input.transition_speed !== undefined
+        ? { transition_speed: input.transition_speed }
+        : {}),
+      ...(input.transition_zoom !== undefined
+        ? { transition_zoom: input.transition_zoom }
+        : {}),
+      ...(input.transition_rotation !== undefined
+        ? { transition_rotation: input.transition_rotation }
+        : {}),
+      ...(input.gyroscope_enabled !== undefined
+        ? { gyroscope_enabled: input.gyroscope_enabled }
+        : {}),
+      ...(input.vr_enabled !== undefined
+        ? { vr_enabled: input.vr_enabled }
         : {}),
     })
     .eq("id", id)
@@ -389,6 +439,13 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
     nadir_opacity: original.nadir_opacity,
     nadir_rotation: original.nadir_rotation,
     nadir_feather: original.nadir_feather,
+    intro_effect: original.intro_effect,
+    transition_effect: original.transition_effect,
+    transition_speed: original.transition_speed,
+    transition_zoom: original.transition_zoom,
+    transition_rotation: original.transition_rotation,
+    gyroscope_enabled: original.gyroscope_enabled,
+    vr_enabled: original.vr_enabled,
   });
 
   if ("error" in created) {
