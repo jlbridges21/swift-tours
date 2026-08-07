@@ -1,19 +1,14 @@
 "use client";
 
 import { XIcon } from "lucide-react";
-import {
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
-  isScenePlaced,
-  placedScenesOnPlan,
-} from "@/lib/floor-plans";
-import { publicUrl } from "@/lib/storage";
+  FloorPlanFrame,
+  floorPlanMarkerStyle,
+} from "@/components/viewer/floor-plan-frame";
+import { isScenePlaced, placedScenesOnPlan } from "@/lib/floor-plans";
 import { cn } from "@/lib/utils";
 import type { FloorPlan, Scene } from "@/types";
 
@@ -83,9 +78,6 @@ export function FloorPlanPanel({
     return null;
   }
 
-  const aspect =
-    plan.width > 0 && plan.height > 0 ? plan.width / plan.height : 1;
-
   return (
     <>
       {!expanded ? (
@@ -98,15 +90,16 @@ export function FloorPlanPanel({
             <span className="truncate">{plan.name}</span>
             <span className="shrink-0 text-[10px] text-white/70">Expand</span>
           </button>
-          <PlanImage
-            plan={plan}
-            markers={markers}
-            currentSceneId={currentSceneId}
-            aspect={aspect}
-            reduceMotion={reduceMotion}
-            onSelectScene={onSelectScene}
-            className="max-h-40"
-          />
+          <div className="flex justify-center px-1 pb-1">
+            <FloorPlanMarkers
+              plan={plan}
+              markers={markers}
+              currentSceneId={currentSceneId}
+              reduceMotion={reduceMotion}
+              onSelectScene={onSelectScene}
+              imageClassName="max-h-40"
+            />
+          </div>
         </div>
       ) : (
         <div className="pointer-events-auto fixed inset-0 z-40 flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-6">
@@ -129,15 +122,14 @@ export function FloorPlanPanel({
                 <XIcon className="size-4" />
               </Button>
             </div>
-            <div className="overflow-auto p-3">
-              <PlanImage
+            <div className="flex justify-center overflow-auto p-3">
+              <FloorPlanMarkers
                 plan={plan}
                 markers={markers}
                 currentSceneId={currentSceneId}
-                aspect={aspect}
                 reduceMotion={reduceMotion}
                 onSelectScene={onSelectScene}
-                className="mx-auto w-full max-w-2xl"
+                imageClassName="max-h-[min(70vh,720px)]"
               />
             </div>
           </div>
@@ -147,42 +139,26 @@ export function FloorPlanPanel({
   );
 }
 
-function PlanImage({
+function FloorPlanMarkers({
   plan,
   markers,
   currentSceneId,
-  aspect,
   reduceMotion,
   onSelectScene,
-  className,
+  imageClassName,
 }: {
   plan: FloorPlan;
   markers: Scene[];
   currentSceneId: string | null;
-  aspect: number;
   reduceMotion: boolean;
   onSelectScene: (sceneId: string) => void;
-  className?: string;
+  imageClassName?: string;
 }) {
   return (
-    <div
-      className={cn("relative w-full overflow-hidden bg-neutral-900", className)}
-      style={{ aspectRatio: `${aspect}` }}
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={publicUrl(plan.storage_path)}
-        alt={plan.name}
-        className="absolute inset-0 size-full object-contain"
-        draggable={false}
-      />
+    <FloorPlanFrame plan={plan} imageClassName={imageClassName}>
       {markers.map((scene) => {
         if (!isScenePlaced(scene)) return null;
         const here = scene.id === currentSceneId;
-        const style: CSSProperties = {
-          left: `${scene.plan_x! * 100}%`,
-          top: `${scene.plan_y! * 100}%`,
-        };
         return (
           <button
             key={scene.id}
@@ -192,16 +168,18 @@ function PlanImage({
             aria-current={here ? "true" : undefined}
             onClick={() => onSelectScene(scene.id)}
             className={cn(
-              "absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white",
+              "absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
+              // Thin light outline so black dots stay visible on light plans.
+              "ring-2 ring-white",
               here
-                ? "size-4 bg-neutral-950"
-                : "size-3 bg-sky-400/90 hover:bg-sky-300",
+                ? "size-4 bg-sky-500"
+                : "size-2.5 bg-neutral-950 hover:bg-neutral-800",
               here && !reduceMotion && "animate-floor-plan-pulse",
             )}
-            style={style}
+            style={floorPlanMarkerStyle(scene.plan_x!, scene.plan_y!)}
           />
         );
       })}
-    </div>
+    </FloorPlanFrame>
   );
 }

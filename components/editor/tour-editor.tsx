@@ -201,6 +201,7 @@ function TourEditorInner({
     tour.transition_speed,
     tour.transition_zoom,
     tour.transition_rotation,
+    tour.transition_motion_blur,
     tour.gyroscope_enabled,
     tour.vr_enabled,
   ]);

@@ -55,27 +55,3 @@ export function unplacedScenesOnPlan<T extends ScenePlanLike>(
   return scenesOnPlan(scenes, planId).filter((scene) => !isScenePlaced(scene));
 }
 
-export function floorPlanExpandedStorageKey(tourId: string): string {
-  return `swift-tours:floor-plan-expanded:${tourId}`;
-}
-
-export function readFloorPlanExpanded(tourId: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return localStorage.getItem(floorPlanExpandedStorageKey(tourId)) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function writeFloorPlanExpanded(tourId: string, expanded: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(
-      floorPlanExpandedStorageKey(tourId),
-      expanded ? "1" : "0",
-    );
-  } catch {
-    // Quota / private mode — ignore.
-  }
-}

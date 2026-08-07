@@ -21,10 +21,6 @@ import { VideoModal } from "@/components/viewer/video-modal";
 import { VrToggle } from "@/components/viewer/vr-toggle";
 import { Button } from "@/components/ui/button";
 import { resolvePanoramaPath } from "@/lib/gl-capabilities";
-import {
-  readFloorPlanExpanded,
-  writeFloorPlanExpanded,
-} from "@/lib/floor-plans";
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { publicUrl } from "@/lib/storage";
 import {
@@ -116,6 +112,7 @@ function effectsFromTour(tour: Tour): ViewerEffectsSettings {
       speed: tour.transition_speed ?? DEFAULT_VIEWER_EFFECTS.transition.speed,
       zoom: tour.transition_zoom ?? true,
       rotation: tour.transition_rotation ?? true,
+      motionBlur: tour.transition_motion_blur ?? false,
     },
     gyroscopeEnabled: tour.gyroscope_enabled ?? true,
     vrEnabled: tour.vr_enabled ?? true,
@@ -254,11 +251,8 @@ export function TourViewerShell({
     [orderedScenes, floorPlans, currentSceneId],
   );
   const showFloorPlanChrome = showPlan && currentFloorPlan != null;
+  // Always start closed on a fresh load — do not restore localStorage.
   const [planOpen, setPlanOpen] = useState(false);
-
-  useEffect(() => {
-    setPlanOpen(readFloorPlanExpanded(tour.id));
-  }, [tour.id]);
 
   const showTopChrome =
     effectiveShowTitle ||
@@ -410,19 +404,16 @@ export function TourViewerShell({
                 <Button
                   type="button"
                   variant="secondary"
-                  size="icon-sm"
-                  className="shadow-sm"
+                  size="sm"
+                  className="bg-black/55 text-white hover:bg-black/70 min-h-11 min-w-11 sm:min-h-8 sm:min-w-0"
                   aria-pressed={planOpen}
                   aria-label={planOpen ? "Hide floor plan" : "Show floor plan"}
                   onClick={() => {
-                    setPlanOpen((prev) => {
-                      const next = !prev;
-                      writeFloorPlanExpanded(tour.id, next);
-                      return next;
-                    });
+                    setPlanOpen((prev) => !prev);
                   }}
                 >
                   <MapIcon className="size-4" />
+                  <span className="hidden sm:inline">Floor plan</span>
                 </Button>
               ) : null}
               {effectiveShowShare ? (
@@ -441,10 +432,7 @@ export function TourViewerShell({
           currentSceneId={currentSceneId}
           onSelectScene={setCurrentSceneId}
           open={planOpen}
-          onOpenChange={(next) => {
-            setPlanOpen(next);
-            writeFloorPlanExpanded(tour.id, next);
-          }}
+          onOpenChange={setPlanOpen}
         />
       ) : null}
 

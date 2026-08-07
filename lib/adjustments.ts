@@ -80,5 +80,24 @@ export function adjustmentFilter(
   return `brightness(${n.adjust_brightness}) contrast(${n.adjust_contrast}) saturate(${n.adjust_saturation})`;
 }
 
+/**
+ * Single source of truth for the WebGL canvas CSS filter.
+ * Composes per-scene adjustments with optional transition motion blur —
+ * never overwrite one with the other.
+ */
+export function composeCanvasFilter(options: {
+  adjustments?: Partial<SceneAdjustments> | null;
+  blurPx?: number;
+}): string {
+  const parts: string[] = [];
+  const adj = adjustmentFilter(options.adjustments ?? null);
+  if (adj) parts.push(adj);
+  const blur = options.blurPx ?? 0;
+  if (blur > 0.05) {
+    parts.push(`blur(${blur.toFixed(2)}px)`);
+  }
+  return parts.join(" ");
+}
+
 /** PSV WebGL canvas — markers live in a sibling DOM layer outside this element. */
 export const PSV_CANVAS_SELECTOR = ".psv-canvas";

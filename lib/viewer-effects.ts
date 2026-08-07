@@ -26,6 +26,8 @@ export type ViewerTransitionSettings = {
   speed: number;
   zoom: boolean;
   rotation: boolean;
+  /** CSS motion blur during link (hotspot) transitions. */
+  motionBlur: boolean;
 };
 
 export type ViewerEffectsSettings = {
@@ -42,6 +44,7 @@ export const DEFAULT_VIEWER_EFFECTS: ViewerEffectsSettings = {
     speed: 1500,
     zoom: true,
     rotation: true,
+    motionBlur: false,
   },
   gyroscopeEnabled: true,
   vrEnabled: true,
@@ -89,6 +92,7 @@ export function resolveTransitionOptions(
     speed: Math.min(5000, Math.max(300, settings.speed)),
     rotation: settings.rotation,
     // Zoom-through: push in toward the link before/during the crossfade.
+    // Only meaningful when fromLink is present (caller gates this).
     zoomTo: settings.zoom ? 100 : undefined,
   };
 }

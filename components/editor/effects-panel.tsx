@@ -38,6 +38,7 @@ export type TourEffectsFields = {
   transition_speed: number;
   transition_zoom: boolean;
   transition_rotation: boolean;
+  transition_motion_blur: boolean;
   gyroscope_enabled: boolean;
   vr_enabled: boolean;
 };
@@ -60,6 +61,7 @@ export function effectsFieldsFromTour(tour: Tour): TourEffectsFields {
     transition_speed: tour.transition_speed ?? 1500,
     transition_zoom: tour.transition_zoom ?? true,
     transition_rotation: tour.transition_rotation ?? true,
+    transition_motion_blur: tour.transition_motion_blur ?? false,
     gyroscope_enabled: tour.gyroscope_enabled ?? true,
     vr_enabled: tour.vr_enabled ?? true,
   };
@@ -79,6 +81,7 @@ export function viewerEffectsFromFields(
       speed: values.transition_speed,
       zoom: values.transition_zoom,
       rotation: values.transition_rotation,
+      motionBlur: values.transition_motion_blur,
     },
     gyroscopeEnabled: values.gyroscope_enabled,
     vrEnabled: values.vr_enabled,
@@ -226,35 +229,60 @@ export function EffectsPanel({
           }
           className="w-full accent-foreground"
         />
-        <div className="flex items-center justify-between gap-4">
-          <Label
-            htmlFor={`fx-tz-${tourId}`}
-            className="flex-1 text-xs font-normal"
-          >
-            Zoom through (toward hotspot)
-          </Label>
-          <Switch
-            id={`fx-tz-${tourId}`}
-            checked={local.transition_zoom}
-            onCheckedChange={(checked) => update("transition_zoom", checked)}
-            disabled={pending}
-          />
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <Label
-            htmlFor={`fx-tr-${tourId}`}
-            className="flex-1 text-xs font-normal"
-          >
-            Rotate toward hotspot
-          </Label>
-          <Switch
-            id={`fx-tr-${tourId}`}
-            checked={local.transition_rotation}
-            onCheckedChange={(checked) =>
-              update("transition_rotation", checked)
-            }
-            disabled={pending}
-          />
+        <div className="space-y-2 border-t border-foreground/10 pt-3">
+          <p className="text-xs font-medium text-muted-foreground">
+            Hotspot navigation only
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Zoom, rotate, and motion blur apply when a visitor clicks a link
+            hotspot — not when jumping via the scene strip or sidebar.
+          </p>
+          <div className="flex items-center justify-between gap-4">
+            <Label
+              htmlFor={`fx-tz-${tourId}`}
+              className="flex-1 text-xs font-normal"
+            >
+              Zoom through (toward hotspot)
+            </Label>
+            <Switch
+              id={`fx-tz-${tourId}`}
+              checked={local.transition_zoom}
+              onCheckedChange={(checked) => update("transition_zoom", checked)}
+              disabled={pending}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <Label
+              htmlFor={`fx-tr-${tourId}`}
+              className="flex-1 text-xs font-normal"
+            >
+              Rotate toward hotspot
+            </Label>
+            <Switch
+              id={`fx-tr-${tourId}`}
+              checked={local.transition_rotation}
+              onCheckedChange={(checked) =>
+                update("transition_rotation", checked)
+              }
+              disabled={pending}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <Label
+              htmlFor={`fx-tmb-${tourId}`}
+              className="flex-1 text-xs font-normal"
+            >
+              Motion blur
+            </Label>
+            <Switch
+              id={`fx-tmb-${tourId}`}
+              checked={local.transition_motion_blur}
+              onCheckedChange={(checked) =>
+                update("transition_motion_blur", checked)
+              }
+              disabled={pending}
+            />
+          </div>
         </div>
       </div>
 

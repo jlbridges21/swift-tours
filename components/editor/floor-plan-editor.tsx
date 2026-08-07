@@ -39,6 +39,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  FloorPlanFrame,
+  floorPlanMarkerStyle,
+} from "@/components/viewer/floor-plan-frame";
+import {
   processFloorPlan,
   validateFloorPlan,
 } from "@/lib/floor-plan-image";
@@ -50,7 +54,7 @@ import {
   unplacedScenesOnPlan,
 } from "@/lib/floor-plans";
 import { createClient } from "@/lib/supabase/client";
-import { floorPlanPath, publicUrl } from "@/lib/storage";
+import { floorPlanPath } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import type { FloorPlan, Scene, SceneGroup } from "@/types";
 
@@ -622,9 +626,6 @@ function PlanCanvas({
     Record<string, { x: number; y: number }>
   >({});
 
-  const aspect = plan.width > 0 && plan.height > 0 ? plan.width / plan.height : 1;
-  const src = publicUrl(plan.storage_path);
-
   const fractionFromEvent = useCallback((clientX: number, clientY: number) => {
     const el = containerRef.current;
     if (!el) return null;
@@ -638,12 +639,10 @@ function PlanCanvas({
 
   return (
     <div
-      ref={containerRef}
       className={cn(
-        "relative w-full overflow-hidden rounded-md bg-muted ring-1 ring-foreground/10",
+        "flex w-full justify-center overflow-hidden rounded-md bg-muted ring-1 ring-foreground/10",
         placing && "cursor-crosshair",
       )}
-      style={{ aspectRatio: `${aspect}` }}
       onClick={(event) => {
         if (!placing) return;
         if ((event.target as HTMLElement).closest("[data-plan-marker]")) {
@@ -653,47 +652,44 @@ function PlanCanvas({
         if (frac) onPlace(frac.x, frac.y);
       }}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt={plan.name}
-        className="pointer-events-none absolute inset-0 size-full object-contain"
-        draggable={false}
-      />
-      {scenes.map((scene) => {
-        if (!isScenePlaced(scene)) return null;
-        const live = livePositions[scene.id];
-        const x = live?.x ?? scene.plan_x!;
-        const y = live?.y ?? scene.plan_y!;
-        const active = scene.id === activeSceneId;
+      <div ref={containerRef} className="max-w-full">
+        <FloorPlanFrame plan={plan} imageClassName="max-h-[min(50vh,420px)]">
+          {scenes.map((scene) => {
+            if (!isScenePlaced(scene)) return null;
+            const live = livePositions[scene.id];
+            const x = live?.x ?? scene.plan_x!;
+            const y = live?.y ?? scene.plan_y!;
+            const active = scene.id === activeSceneId;
 
-        return (
-          <PlanMarker
-            key={scene.id}
-            scene={scene}
-            x={x}
-            y={y}
-            active={active}
-            onSelect={() => onSelectScene(scene.id)}
-            onUnplace={() => onUnplace(scene.id)}
-            onLiveMove={(nx, ny) => {
-              setLivePositions((prev) => ({
-                ...prev,
-                [scene.id]: { x: nx, y: ny },
-              }));
-            }}
-            onCommitMove={(nx, ny) => {
-              setLivePositions((prev) => {
-                const next = { ...prev };
-                delete next[scene.id];
-                return next;
-              });
-              onMoveMarker(scene.id, nx, ny);
-            }}
-            fractionFromEvent={fractionFromEvent}
-          />
-        );
-      })}
+            return (
+              <PlanMarker
+                key={scene.id}
+                scene={scene}
+                x={x}
+                y={y}
+                active={active}
+                onSelect={() => onSelectScene(scene.id)}
+                onUnplace={() => onUnplace(scene.id)}
+                onLiveMove={(nx, ny) => {
+                  setLivePositions((prev) => ({
+                    ...prev,
+                    [scene.id]: { x: nx, y: ny },
+                  }));
+                }}
+                onCommitMove={(nx, ny) => {
+                  setLivePositions((prev) => {
+                    const next = { ...prev };
+                    delete next[scene.id];
+                    return next;
+                  });
+                  onMoveMarker(scene.id, nx, ny);
+                }}
+                fractionFromEvent={fractionFromEvent}
+              />
+            );
+          })}
+        </FloorPlanFrame>
+      </div>
     </div>
   );
 }
@@ -776,15 +772,15 @@ function PlanMarker({
     <div
       data-plan-marker
       className="absolute z-10 -translate-x-1/2 -translate-y-1/2"
-      style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
+      style={floorPlanMarkerStyle(x, y)}
     >
       <button
         type="button"
         title={scene.name}
         aria-label={scene.name}
         className={cn(
-          "relative size-3.5 rounded-full border-2 border-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          active ? "bg-neutral-900" : "bg-sky-500",
+          "relative rounded-full shadow-sm outline-none ring-2 ring-white focus-visible:ring-2 focus-visible:ring-sky-300",
+          active ? "size-4 bg-sky-500" : "size-2.5 bg-neutral-950",
         )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

@@ -27,8 +27,9 @@ import {
 } from "react";
 
 import {
-  adjustmentFilter,
+  composeCanvasFilter,
   PSV_CANVAS_SELECTOR,
+  type SceneAdjustments,
 } from "@/lib/adjustments";
 import {
   applyLittlePlanetPose,
@@ -480,6 +481,68 @@ function applyNodeInitialView(
   viewer.rotate({ yaw: data.initialYaw, pitch: data.initialPitch });
 }
 
+type CanvasVisualState = {
+  adjustments: Partial<SceneAdjustments> | null;
+  bypassed: boolean;
+  blurPx: number;
+  scale: number;
+};
+
+function syncCanvasVisuals(viewer: Viewer, state: CanvasVisualState) {
+  const canvas = viewer.container.querySelector(
+    PSV_CANVAS_SELECTOR,
+  ) as HTMLCanvasElement | null;
+  if (!canvas) return;
+
+  const filter = composeCanvasFilter({
+    adjustments: state.bypassed ? null : state.adjustments,
+    blurPx: state.blurPx,
+  });
+  if (filter) {
+    canvas.style.filter = filter;
+  } else {
+    canvas.style.removeProperty("filter");
+  }
+
+  if (Math.abs(state.scale - 1) > 0.001) {
+    canvas.style.transform = `scale(${state.scale.toFixed(4)})`;
+  } else {
+    canvas.style.removeProperty("transform");
+  }
+}
+
+/**
+ * blur(0→6→0) + scale(1→1.06→1) over `durationMs`, synced with transition_speed.
+ * Calls onFrame each tick so the filter can recompose with scene adjustments.
+ */
+function runMotionBlurAnimation(
+  durationMs: number,
+  onFrame: (blurPx: number, scale: number) => void,
+): () => void {
+  let raf = 0;
+  const start = performance.now();
+
+  const tick = (now: number) => {
+    const t = Math.min(1, (now - start) / Math.max(1, durationMs));
+    const envelope = t <= 0.5 ? t / 0.5 : (1 - t) / 0.5;
+    const blurPx = 6 * envelope;
+    const scale = 1 + 0.06 * envelope;
+    onFrame(blurPx, scale);
+    if (t < 1) {
+      raf = requestAnimationFrame(tick);
+    } else {
+      onFrame(0, 1);
+      raf = 0;
+    }
+  };
+
+  raf = requestAnimationFrame(tick);
+  return () => {
+    if (raf) cancelAnimationFrame(raf);
+    onFrame(0, 1);
+  };
+}
+
 const DRAG_THRESHOLD_PX = 5;
 const MARKER_ID_PREFIX = "psv-marker-";
 
@@ -543,6 +606,14 @@ export function PanoramaViewer({
   const introPendingRef = useRef(false);
   const introHandleRef = useRef<LittlePlanetHandle | null>(null);
   const introRanRef = useRef(false);
+  /** Motion blur / scale envelope during link transitions (composed into canvas filter). */
+  const motionBlurPxRef = useRef(0);
+  const motionScaleRef = useRef(1);
+  const motionBlurCancelRef = useRef<(() => void) | null>(null);
+  const canvasAdjustmentsRef = useRef<{
+    adjustments: Partial<SceneAdjustments> | null;
+    bypassed: boolean;
+  }>({ adjustments: null, bypassed: false });
   /** First texture + orientation applied; safe to fade the canvas in. */
   const [panoramaRevealed, setPanoramaRevealed] = useState(false);
 
@@ -657,7 +728,14 @@ export function PanoramaViewer({
             const resolved = resolveTransitionOptions(
               viewerEffectsRef.current.transition,
             );
-            const base = {
+            const base: {
+              showLoader: boolean;
+              effect: "none" | "fade" | "black" | "white";
+              speed: number;
+              rotation: boolean;
+              zoomTo?: number;
+              rotateTo?: { yaw: number; pitch: number };
+            } = {
               showLoader: resolved.showLoader,
               effect: resolved.effect,
               speed: resolved.speed,
@@ -672,29 +750,46 @@ export function PanoramaViewer({
             // Bake initial view into setPanorama for non-link navigations so the
             // texture never appears at the wrong angle (pano XMP / 0,0) and then
             // snaps. Link navigations keep fromLinkPosition from the VT plugin.
+            let result = base;
             if (fromLink || introPendingRef.current) {
-              return base;
+              result = base;
+            } else {
+              const data = to.data as
+                | { initialYaw?: number; initialPitch?: number }
+                | undefined;
+              if (
+                typeof data?.initialYaw === "number" &&
+                typeof data?.initialPitch === "number"
+              ) {
+                result = {
+                  ...base,
+                  rotateTo: {
+                    yaw: data.initialYaw,
+                    pitch: data.initialPitch,
+                  },
+                  // Apply as baked position, not a visible rotate animation.
+                  rotation: false,
+                };
+              }
             }
 
-            const data = to.data as
-              | { initialYaw?: number; initialPitch?: number }
-              | undefined;
-            if (
-              typeof data?.initialYaw === "number" &&
-              typeof data?.initialPitch === "number"
-            ) {
-              return {
-                ...base,
-                rotateTo: {
-                  yaw: data.initialYaw,
-                  pitch: data.initialPitch,
-                },
-                // Apply as baked position, not a visible rotate animation.
-                rotation: false,
-              };
+            if (process.env.NODE_ENV === "development") {
+              console.debug("[swift-tours transitionOptions]", {
+                to: to.id,
+                fromLink: Boolean(fromLink),
+                fromLinkPosition: fromLink
+                  ? {
+                      yaw: (fromLink as { position?: { yaw?: number } })
+                        .position?.yaw,
+                      pitch: (fromLink as { position?: { pitch?: number } })
+                        .position?.pitch,
+                    }
+                  : null,
+                result,
+              });
             }
 
-            return base;
+            return result;
           },
         }),
       ],
@@ -835,7 +930,46 @@ export function PanoramaViewer({
         event.marker.data.targetSceneId
       ) {
         setInfoOverlay(null);
-        void tour.setCurrentNode(event.marker.data.targetSceneId);
+        if (modeRef.current === "view") {
+          const yaw = event.marker.data.yaw;
+          const pitch = event.marker.data.pitch;
+          const targetId = event.marker.data.targetSceneId;
+          // Pass a synthetic fromLink so VT can rotate/zoom toward the hotspot.
+          // Without this, setCurrentNode has no direction and zoom/rotate are no-ops.
+          const fromLink: VirtualTourLink | undefined =
+            typeof yaw === "number" && typeof pitch === "number"
+              ? {
+                  nodeId: targetId,
+                  position: { yaw, pitch },
+                }
+              : undefined;
+
+          if (
+            fromLink &&
+            viewerEffectsRef.current.transition.motionBlur &&
+            !prefersReducedMotion()
+          ) {
+            const duration = resolveTransitionOptions(
+              viewerEffectsRef.current.transition,
+            ).speed;
+            motionBlurCancelRef.current?.();
+            motionBlurCancelRef.current = runMotionBlurAnimation(
+              duration,
+              (blurPx, scale) => {
+                motionBlurPxRef.current = blurPx;
+                motionScaleRef.current = scale;
+                syncCanvasVisuals(viewer, {
+                  adjustments: canvasAdjustmentsRef.current.adjustments,
+                  bypassed: canvasAdjustmentsRef.current.bypassed,
+                  blurPx,
+                  scale,
+                });
+              },
+            );
+          }
+
+          void tour.setCurrentNode(targetId, undefined, fromLink);
+        }
         return;
       }
 
@@ -901,6 +1035,10 @@ export function PanoramaViewer({
       cancelled = true;
       clearLoadTimeout();
       if (revealRaf) cancelAnimationFrame(revealRaf);
+      motionBlurCancelRef.current?.();
+      motionBlurCancelRef.current = null;
+      motionBlurPxRef.current = 0;
+      motionScaleRef.current = 1;
       bootstrappingRef.current = false;
       bootstrapSceneIdRef.current = null;
       introHandleRef.current?.cancel();
@@ -1048,29 +1186,28 @@ export function PanoramaViewer({
   // Per-scene CSS filter on the WebGL canvas (not the viewer root — markers
   // live in a sibling `.psv-markers` layer and must stay unfiltered).
   // Nadir imageLayer is inside the canvas, so it receives the same filter.
+  // Motion blur composes into the same filter string (never overwrites).
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !hasScenes) return;
-
-    const canvas = viewer.container.querySelector(
-      PSV_CANVAS_SELECTOR,
-    ) as HTMLCanvasElement | null;
-    if (!canvas) return;
 
     const sceneId =
       currentSceneId && scenes.some((scene) => scene.id === currentSceneId)
         ? currentSceneId
         : resolveStartId(scenes, startSceneId);
-    const scene = scenes.find((item) => item.id === sceneId);
-    const filter = adjustmentsBypassed
-      ? ""
-      : adjustmentFilter(scene ?? null);
+    const scene = scenes.find((item) => item.id === sceneId) ?? null;
 
-    if (filter) {
-      canvas.style.filter = filter;
-    } else {
-      canvas.style.removeProperty("filter");
-    }
+    canvasAdjustmentsRef.current = {
+      adjustments: scene,
+      bypassed: adjustmentsBypassed,
+    };
+
+    syncCanvasVisuals(viewer, {
+      adjustments: scene,
+      bypassed: adjustmentsBypassed,
+      blurPx: motionBlurPxRef.current,
+      scale: motionScaleRef.current,
+    });
   }, [
     hasScenes,
     scenes,

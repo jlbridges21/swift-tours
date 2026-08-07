@@ -40,6 +40,7 @@ export type Database = {
           transition_speed: number;
           transition_zoom: boolean;
           transition_rotation: boolean;
+          transition_motion_blur: boolean;
           gyroscope_enabled: boolean;
           vr_enabled: boolean;
           created_at: string;
@@ -68,6 +69,7 @@ export type Database = {
           transition_speed?: number;
           transition_zoom?: boolean;
           transition_rotation?: boolean;
+          transition_motion_blur?: boolean;
           gyroscope_enabled?: boolean;
           vr_enabled?: boolean;
           created_at?: string;
@@ -96,6 +98,7 @@ export type Database = {
           transition_speed?: number;
           transition_zoom?: boolean;
           transition_rotation?: boolean;
+          transition_motion_blur?: boolean;
           gyroscope_enabled?: boolean;
           vr_enabled?: boolean;
           created_at?: string;

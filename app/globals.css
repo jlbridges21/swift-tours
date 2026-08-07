@@ -218,10 +218,14 @@
 @keyframes floor-plan-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgb(255 255 255 / 0.55);
+    box-shadow:
+      0 0 0 0 rgb(56 189 248 / 0.55),
+      0 0 0 2px rgb(255 255 255);
   }
   50% {
-    box-shadow: 0 0 0 6px rgb(255 255 255 / 0);
+    box-shadow:
+      0 0 0 6px rgb(56 189 248 / 0),
+      0 0 0 2px rgb(255 255 255);
   }
 }
 
@@ -236,13 +240,14 @@
 }
 
 /* Per-scene brightness/contrast/saturation — applied to the WebGL canvas only.
-   Markers live in a sibling DOM layer and stay unfiltered. */
+   Markers live in a sibling DOM layer and stay unfiltered.
+   No CSS transition on filter: motion-blur + adjustments are composed in JS. */
 .psv-canvas {
-  transition: filter 150ms ease;
+  transform-origin: center center;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .psv-canvas {
-    transition: none;
+    transform: none !important;
   }
 }
