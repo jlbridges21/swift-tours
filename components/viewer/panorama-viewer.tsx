@@ -66,9 +66,9 @@ import {
   prefersReducedMotion,
   resolveTransitionOptions,
   walkthroughArrivalYaw,
-  ZOOM_ARRIVAL_START,
-  ZOOM_DEFAULT,
   ZOOM_WALK_IN_PUSH,
+  ZOOM_WALKTHROUGH_SETTLE,
+  ZOOM_WIDE,
   type ViewerEffectsSettings,
 } from "@/lib/viewer-effects";
 import type { Hotspot, Scene } from "@/types";
@@ -1249,8 +1249,33 @@ export function PanoramaViewer({
 
           // Kick preload immediately on click (also started on pointerenter).
           const preloadPromise = preloadSceneTexture(targetId);
+          const walkthroughOn =
+            viewerEffectsRef.current.walkthroughEnabled &&
+            !prefersReducedMotion();
 
-          // Zoom walk-in: outgoing push, then arrival wide→default with blur/fade.
+          /** Land fully zoomed out; walkthrough alone eases in slightly (≈8%). */
+          const beginArrivalZoom = (fadeMs: number) => {
+            // BEFORE the new scene fades in — max FOV, no post-reveal snap.
+            viewer.zoom(ZOOM_WIDE);
+            if (!walkthroughOn) {
+              applyMotionFrame(0, 1);
+              return;
+            }
+            motionBlurCancelRef.current?.();
+            motionBlurCancelRef.current = runArrivalSettleAnimation(
+              fadeMs,
+              ZOOM_WIDE,
+              ZOOM_WALKTHROUGH_SETTLE,
+              motionBlurPxRef.current || 0,
+              motionScaleRef.current || 1,
+              (zoom, blurPx, scale) => {
+                viewer.zoom(zoom);
+                applyMotionFrame(blurPx, scale);
+              },
+            );
+          };
+
+          // Zoom walk-in: outgoing push, then arrival wide (+ optional walkthrough nudge).
           if (fromLink && resolved.isZoomWalkIn) {
             const linkYaw =
               typeof fromLink.position === "object" &&
@@ -1314,23 +1339,7 @@ export function PanoramaViewer({
 
               if (cancelled) return;
 
-              // BEFORE the new scene fades in: snap camera to wide FOV.
-              // Blur is at peak here, masking the junction with the push.
-              // Lower zoom = wider FOV (PSV: 0 widest → 100 tightest).
-              viewer.zoom(ZOOM_ARRIVAL_START);
-
-              motionBlurCancelRef.current?.();
-              motionBlurCancelRef.current = runArrivalSettleAnimation(
-                fadeMs,
-                ZOOM_ARRIVAL_START,
-                ZOOM_DEFAULT,
-                6,
-                1.06,
-                (zoom, blurPx, scale) => {
-                  viewer.zoom(zoom);
-                  applyMotionFrame(blurPx, scale);
-                },
-              );
+              beginArrivalZoom(fadeMs);
 
               void tour.setCurrentNode(
                 targetId,
@@ -1338,8 +1347,8 @@ export function PanoramaViewer({
                   effect: "fade",
                   speed: fadeMs,
                   showLoader: false,
-                  // Zoom owned by runArrivalSettleAnimation — do not pass zoomTo.
-                  rotation: viewerEffectsRef.current.walkthroughEnabled,
+                  // Zoom owned by beginArrivalZoom — do not pass zoomTo.
+                  rotation: walkthroughOn,
                 },
                 fromLink,
               );
@@ -1378,7 +1387,15 @@ export function PanoramaViewer({
               setLinkWaitHint(false);
             }
             if (cancelled) return;
-            void tour.setCurrentNode(targetId, { showLoader: false }, fromLink);
+
+            const fadeMs = resolved.speed;
+            beginArrivalZoom(fadeMs);
+
+            void tour.setCurrentNode(
+              targetId,
+              { showLoader: false },
+              fromLink,
+            );
           })();
         }
         return;

@@ -18,14 +18,21 @@ export const TRANSITION_EFFECTS: TransitionEffect[] = [
  * PSV zoom levels: 0 = widest FOV (maxFov), 100 = tightest (minFov).
  * Confirmed against Viewer.zoom() / defaultZoomLvl / little-planet using 0.
  */
-/** Outgoing push peak — camera drives into the hotspot. */
+/** Fully zoomed out — max field of view on hotspot arrival. */
+export const ZOOM_WIDE = 0;
+/**
+ * Walkthrough-only settle: start at ZOOM_WIDE, ease in this far (≈8% of the
+ * 0–100 zoom range — within the requested 5–10% “ever so slight” nudge).
+ */
+export const ZOOM_WALKTHROUGH_SETTLE = 8;
+/** Outgoing push peak for the Zoom (walk-in) transition preset. */
 export const ZOOM_WALK_IN_PUSH = 90;
-/** Arrival start — wider than default so the new room feels like stepping in. */
-export const ZOOM_ARRIVAL_START = 25;
-/** Settled viewing level (matches Viewer defaultZoomLvl for normal tours). */
-export const ZOOM_DEFAULT = 50;
 
-/** @deprecated Use ZOOM_WALK_IN_PUSH — kept for any external imports. */
+/** @deprecated Use ZOOM_WIDE */
+export const ZOOM_ARRIVAL_START = ZOOM_WIDE;
+/** @deprecated Prefer ZOOM_WIDE / ZOOM_WALKTHROUGH_SETTLE */
+export const ZOOM_DEFAULT = ZOOM_WIDE;
+/** @deprecated Use ZOOM_WALK_IN_PUSH */
 export const ZOOM_WALK_IN_LEVEL = ZOOM_WALK_IN_PUSH;
 
 export function isIntroEffect(value: string): value is IntroEffect {
@@ -141,7 +148,9 @@ export function resolveTransitionOptions(
     effect,
     speed: Math.min(5000, Math.max(300, settings.speed)),
     rotation: settings.rotation,
-    zoomTo: settings.zoom ? 100 : undefined,
+    // Link "zoom through" used to target 100 (fully in) and made arrivals feel
+    // cramped. Hotspot arrivals always land wide; walkthrough owns a slight ease-in.
+    zoomTo: undefined,
     isZoomWalkIn: false,
     forceMotionBlur: false,
   };
