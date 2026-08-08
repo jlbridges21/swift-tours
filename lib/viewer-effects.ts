@@ -14,8 +14,19 @@ export const TRANSITION_EFFECTS: TransitionEffect[] = [
   "zoom",
 ];
 
-/** Peak zoom level during the zoom (walk-in) preset — strong push without clipping at 100. */
-export const ZOOM_WALK_IN_LEVEL = 90;
+/**
+ * PSV zoom levels: 0 = widest FOV (maxFov), 100 = tightest (minFov).
+ * Confirmed against Viewer.zoom() / defaultZoomLvl / little-planet using 0.
+ */
+/** Outgoing push peak — camera drives into the hotspot. */
+export const ZOOM_WALK_IN_PUSH = 90;
+/** Arrival start — wider than default so the new room feels like stepping in. */
+export const ZOOM_ARRIVAL_START = 25;
+/** Settled viewing level (matches Viewer defaultZoomLvl for normal tours). */
+export const ZOOM_DEFAULT = 50;
+
+/** @deprecated Use ZOOM_WALK_IN_PUSH — kept for any external imports. */
+export const ZOOM_WALK_IN_LEVEL = ZOOM_WALK_IN_PUSH;
 
 export function isIntroEffect(value: string): value is IntroEffect {
   return (INTRO_EFFECTS as string[]).includes(value);
@@ -103,12 +114,14 @@ export function resolveTransitionOptions(
   }
 
   if (isZoomWalkIn) {
+    // Zoom levels are owned by the click handler (push + arrival settle).
+    // Do not pass zoomTo here — PSV would animate from the push peak and
+    // invert the arrival (zoomed-in → out).
     return {
-      showLoader: true,
+      showLoader: false,
       effect: "fade",
       speed: Math.min(5000, Math.max(300, settings.speed)),
       rotation: true,
-      zoomTo: ZOOM_WALK_IN_LEVEL,
       isZoomWalkIn: true,
       forceMotionBlur: true,
     };
@@ -149,4 +162,14 @@ export function normalizeYaw(yaw: number): number {
  */
 export function walkthroughArrivalYaw(returnHotspotYaw: number): number {
   return normalizeYaw(returnHotspotYaw + Math.PI);
+}
+
+export function easeOutCubic(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return 1 - Math.pow(1 - x, 3);
+}
+
+export function easeInCubic(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * x;
 }

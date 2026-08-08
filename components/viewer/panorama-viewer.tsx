@@ -61,10 +61,14 @@ import { publicUrl } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_VIEWER_EFFECTS,
+  easeInCubic,
+  easeOutCubic,
   prefersReducedMotion,
   resolveTransitionOptions,
   walkthroughArrivalYaw,
-  ZOOM_WALK_IN_LEVEL,
+  ZOOM_ARRIVAL_START,
+  ZOOM_DEFAULT,
+  ZOOM_WALK_IN_PUSH,
   type ViewerEffectsSettings,
 } from "@/lib/viewer-effects";
 import type { Hotspot, Scene } from "@/types";
@@ -632,8 +636,8 @@ function syncCanvasVisuals(viewer: Viewer, state: CanvasVisualState) {
 }
 
 /**
- * blur(0→6→0) + scale(1→1.06→1) over `durationMs`, synced with transition_speed.
- * Calls onFrame each tick so the filter can recompose with scene adjustments.
+ * blur(0→peak) + scale(1→1.06) over `durationMs` (push phase), ease-in.
+ * Arrival settle uses runArrivalSettleAnimation instead.
  */
 function runMotionBlurAnimation(
   durationMs: number,
@@ -643,12 +647,13 @@ function runMotionBlurAnimation(
   const start = performance.now();
 
   const tick = (now: number) => {
-    const t = Math.min(1, (now - start) / Math.max(1, durationMs));
-    const envelope = t <= 0.5 ? t / 0.5 : (1 - t) / 0.5;
+    const raw = Math.min(1, (now - start) / Math.max(1, durationMs));
+    // Default (non–walk-in) path: symmetric envelope over the full transition.
+    const envelope = raw <= 0.5 ? raw / 0.5 : (1 - raw) / 0.5;
     const blurPx = 6 * envelope;
     const scale = 1 + 0.06 * envelope;
     onFrame(blurPx, scale);
-    if (t < 1) {
+    if (raw < 1) {
       raf = requestAnimationFrame(tick);
     } else {
       onFrame(0, 1);
@@ -662,6 +667,71 @@ function runMotionBlurAnimation(
     onFrame(0, 1);
   };
 }
+
+/** Push-phase blur: 0 → peak with ease-in (pairs with outgoing zoom push). */
+function runPushBlurAnimation(
+  durationMs: number,
+  onFrame: (blurPx: number, scale: number) => void,
+): () => void {
+  let raf = 0;
+  const start = performance.now();
+
+  const tick = (now: number) => {
+    const raw = Math.min(1, (now - start) / Math.max(1, durationMs));
+    const t = easeInCubic(raw);
+    onFrame(6 * t, 1 + 0.06 * t);
+    if (raw < 1) {
+      raf = requestAnimationFrame(tick);
+    } else {
+      onFrame(6, 1.06);
+      raf = 0;
+    }
+  };
+
+  raf = requestAnimationFrame(tick);
+  return () => {
+    if (raf) cancelAnimationFrame(raf);
+  };
+}
+
+/**
+ * Arrival settle: zoom wide→default, blur peak→0, on the same ease-out timeline.
+ * Opacity is driven by PSV's fade over the same duration.
+ */
+function runArrivalSettleAnimation(
+  durationMs: number,
+  fromZoom: number,
+  toZoom: number,
+  fromBlur: number,
+  fromScale: number,
+  onFrame: (zoom: number, blurPx: number, scale: number) => void,
+): () => void {
+  let raf = 0;
+  const start = performance.now();
+
+  const tick = (now: number) => {
+    const raw = Math.min(1, (now - start) / Math.max(1, durationMs));
+    const t = easeOutCubic(raw);
+    const zoom = fromZoom + (toZoom - fromZoom) * t;
+    const blurPx = fromBlur * (1 - t);
+    const scale = fromScale + (1 - fromScale) * t;
+    onFrame(zoom, blurPx, scale);
+    if (raw < 1) {
+      raf = requestAnimationFrame(tick);
+    } else {
+      onFrame(toZoom, 0, 1);
+      raf = 0;
+    }
+  };
+
+  raf = requestAnimationFrame(tick);
+  return () => {
+    if (raf) cancelAnimationFrame(raf);
+    onFrame(toZoom, 0, 1);
+  };
+}
+
+const LINK_WAIT_HINT_MS = 2000;
 
 const DRAG_THRESHOLD_PX = 5;
 const MARKER_ID_PREFIX = "psv-marker-";
@@ -741,6 +811,8 @@ export function PanoramaViewer({
     adjustments: Partial<SceneAdjustments> | null;
     bypassed: boolean;
   }>({ adjustments: null, bypassed: false });
+  /** Texture preload promises keyed by scene id (link targets). */
+  const preloadPromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   /** First texture + orientation applied; safe to fade the canvas in. */
   const [panoramaRevealed, setPanoramaRevealed] = useState(false);
 
@@ -748,6 +820,8 @@ export function PanoramaViewer({
   const [loadTimedOut, setLoadTimedOut] = useState(false);
   const [infoOverlay, setInfoOverlay] = useState<InfoOverlay | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+  /** Subtle hint when a link target still isn't cached after ~2s. */
+  const [linkWaitHint, setLinkWaitHint] = useState(false);
 
   modeRef.current = mode;
   onSceneChangeRef.current = onSceneChange;
@@ -871,13 +945,17 @@ export function PanoramaViewer({
               zoomTo?: number;
               rotateTo?: { yaw: number; pitch: number };
             } = {
-              showLoader: resolved.showLoader,
+              // Link navigations never show PSV's spinner — preload + hold.
+              showLoader: fromLink ? false : resolved.showLoader,
               effect: resolved.effect,
               speed: resolved.speed,
               rotation: resolved.rotation,
               // Zoom-through only when navigating via a link (hotspot).
+              // Zoom walk-in omits zoomTo — the click handler owns push/settle.
               zoomTo:
-                resolved.zoomTo !== undefined && fromLink
+                resolved.zoomTo !== undefined &&
+                fromLink &&
+                !resolved.isZoomWalkIn
                   ? resolved.zoomTo
                   : undefined,
             };
@@ -989,6 +1067,51 @@ export function PanoramaViewer({
       }, 60_000);
     };
 
+    /** Preload a scene's panorama texture (no-op if already in flight / done). */
+    const preloadSceneTexture = (sceneId: string): Promise<void> => {
+      const existing = preloadPromisesRef.current.get(sceneId);
+      if (existing) return existing;
+
+      const scene = scenesRef.current.find((s) => s.id === sceneId);
+      if (!scene) return Promise.resolve();
+
+      const url = panoramaUrlForScene(scene);
+      const promise = viewer.textureLoader
+        .preloadPanorama(url)
+        .then(() => undefined)
+        .catch(() => {
+          preloadPromisesRef.current.delete(sceneId);
+        });
+      preloadPromisesRef.current.set(sceneId, promise);
+      return promise;
+    };
+
+    /** After the current scene has settled, preload every link target on it. */
+    const preloadLinkTargetsForScene = (sceneId: string) => {
+      const targets = hotspotsRef.current.filter(
+        (h) =>
+          h.scene_id === sceneId &&
+          h.type === "link" &&
+          typeof h.target_scene_id === "string",
+      );
+      for (const hotspot of targets) {
+        if (hotspot.target_scene_id) {
+          void preloadSceneTexture(hotspot.target_scene_id);
+        }
+      }
+    };
+
+    const applyMotionFrame = (blurPx: number, scale: number) => {
+      motionBlurPxRef.current = blurPx;
+      motionScaleRef.current = scale;
+      syncCanvasVisuals(viewer, {
+        adjustments: canvasAdjustmentsRef.current.adjustments,
+        bypassed: canvasAdjustmentsRef.current.bypassed,
+        blurPx,
+        scale,
+      });
+    };
+
     const startIntroIfNeeded = (node: VirtualTourNode) => {
       if (!introPendingRef.current || introRanRef.current || cancelled) return;
       introPendingRef.current = false;
@@ -1040,6 +1163,11 @@ export function PanoramaViewer({
       // Do NOT viewer.rotate() here. Non-link navigations bake initial view into
       // setPanorama via transitionOptions.rotateTo (as position). A post-load
       // rotate was the visible snap. Link navigations keep fromLinkPosition.
+
+      // Preload link targets only after the current scene has finished loading.
+      if (viewer.state.ready && modeRef.current === "view") {
+        preloadLinkTargetsForScene(event.node.id);
+      }
     };
     tour.addEventListener("node-changed", handleNodeChanged);
 
@@ -1054,6 +1182,10 @@ export function PanoramaViewer({
         applyNodeInitialView(viewer, node, null);
       }
       revealPanorama();
+      // First scene settled — now safe to preload its link targets.
+      if (node && modeRef.current === "view") {
+        preloadLinkTargetsForScene(node.id);
+      }
     };
     viewer.addEventListener("ready", handleReady);
 
@@ -1114,31 +1246,11 @@ export function PanoramaViewer({
           const resolved = resolveTransitionOptions(
             viewerEffectsRef.current.transition,
           );
-          const useBlur =
-            Boolean(fromLink) &&
-            (resolved.forceMotionBlur ||
-              viewerEffectsRef.current.transition.motionBlur) &&
-            !prefersReducedMotion();
 
-          if (useBlur) {
-            motionBlurCancelRef.current?.();
-            motionBlurCancelRef.current = runMotionBlurAnimation(
-              resolved.speed,
-              (blurPx, scale) => {
-                motionBlurPxRef.current = blurPx;
-                motionScaleRef.current = scale;
-                syncCanvasVisuals(viewer, {
-                  adjustments: canvasAdjustmentsRef.current.adjustments,
-                  bypassed: canvasAdjustmentsRef.current.bypassed,
-                  blurPx,
-                  scale,
-                });
-              },
-            );
-          }
+          // Kick preload immediately on click (also started on pointerenter).
+          const preloadPromise = preloadSceneTexture(targetId);
 
-          // Zoom walk-in: push toward the hotspot first, then fade while
-          // settling zoom back to the prior level (not after the new scene shows).
+          // Zoom walk-in: outgoing push, then arrival wide→default with blur/fade.
           if (fromLink && resolved.isZoomWalkIn) {
             const linkYaw =
               typeof fromLink.position === "object" &&
@@ -1161,27 +1273,72 @@ export function PanoramaViewer({
               void tour.setCurrentNode(targetId, undefined, fromLink);
               return;
             }
-            const prevZoom = viewer.getZoomLevel();
+
             const pushMs = Math.round(resolved.speed * 0.45);
             const fadeMs = Math.max(300, resolved.speed - pushMs);
+
             void (async () => {
+              motionBlurCancelRef.current?.();
+              motionBlurCancelRef.current = runPushBlurAnimation(
+                pushMs,
+                applyMotionFrame,
+              );
+
               try {
                 await viewer.animate({
                   yaw: linkYaw,
                   pitch: linkPitch,
-                  zoom: ZOOM_WALK_IN_LEVEL,
+                  zoom: ZOOM_WALK_IN_PUSH,
                   speed: pushMs,
+                  easing: "inCubic",
                 });
               } catch {
-                // Aborted by another navigation — still attempt the scene change.
+                // Aborted — still attempt arrival if possible.
               }
+
+              // Hold the outgoing push while the target texture finishes.
+              // No spinner unless the wait exceeds ~2s.
+              let hintTimer: ReturnType<typeof setTimeout> | null =
+                setTimeout(() => {
+                  if (!cancelled) setLinkWaitHint(true);
+                }, LINK_WAIT_HINT_MS);
+              try {
+                await preloadPromise;
+              } catch {
+                // Fall through — setCurrentNode / panorama-error handle failures.
+              } finally {
+                if (hintTimer) clearTimeout(hintTimer);
+                hintTimer = null;
+                setLinkWaitHint(false);
+              }
+
+              if (cancelled) return;
+
+              // BEFORE the new scene fades in: snap camera to wide FOV.
+              // Blur is at peak here, masking the junction with the push.
+              // Lower zoom = wider FOV (PSV: 0 widest → 100 tightest).
+              viewer.zoom(ZOOM_ARRIVAL_START);
+
+              motionBlurCancelRef.current?.();
+              motionBlurCancelRef.current = runArrivalSettleAnimation(
+                fadeMs,
+                ZOOM_ARRIVAL_START,
+                ZOOM_DEFAULT,
+                6,
+                1.06,
+                (zoom, blurPx, scale) => {
+                  viewer.zoom(zoom);
+                  applyMotionFrame(blurPx, scale);
+                },
+              );
+
               void tour.setCurrentNode(
                 targetId,
                 {
                   effect: "fade",
                   speed: fadeMs,
-                  zoomTo: prevZoom,
-                  // Facing the doorway already; walkthrough may still rotate.
+                  showLoader: false,
+                  // Zoom owned by runArrivalSettleAnimation — do not pass zoomTo.
                   rotation: viewerEffectsRef.current.walkthroughEnabled,
                 },
                 fromLink,
@@ -1190,7 +1347,39 @@ export function PanoramaViewer({
             return;
           }
 
-          void tour.setCurrentNode(targetId, undefined, fromLink);
+          const useBlur =
+            Boolean(fromLink) &&
+            (resolved.forceMotionBlur ||
+              viewerEffectsRef.current.transition.motionBlur) &&
+            !prefersReducedMotion();
+
+          if (useBlur) {
+            motionBlurCancelRef.current?.();
+            motionBlurCancelRef.current = runMotionBlurAnimation(
+              resolved.speed,
+              applyMotionFrame,
+            );
+          }
+
+          // Non–zoom-walk-in link nav: wait briefly for preload without spinner.
+          void (async () => {
+            let hintTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+              () => {
+                if (!cancelled) setLinkWaitHint(true);
+              },
+              LINK_WAIT_HINT_MS,
+            );
+            try {
+              await preloadPromise;
+            } catch {
+              // ignore
+            } finally {
+              if (hintTimer) clearTimeout(hintTimer);
+              setLinkWaitHint(false);
+            }
+            if (cancelled) return;
+            void tour.setCurrentNode(targetId, { showLoader: false }, fromLink);
+          })();
         }
         return;
       }
@@ -1236,6 +1425,32 @@ export function PanoramaViewer({
     };
     markersPlugin.addEventListener("unselect-marker", handleUnselectMarker);
 
+    // Eager preload on hover / press of a link marker (after first scene is ready).
+    const maybePreloadFromMarkerEvent = (event: Event) => {
+      if (modeRef.current !== "view" || !viewer.state.ready) return;
+      const markerEl = markerElementFromTarget(event.target);
+      if (!markerEl) return;
+      const id = hotspotIdFromMarkerElement(markerEl);
+      if (!id) return;
+      const hotspot = hotspotsRef.current.find((h) => h.id === id);
+      if (
+        hotspot?.type === "link" &&
+        typeof hotspot.target_scene_id === "string"
+      ) {
+        void preloadSceneTexture(hotspot.target_scene_id);
+      }
+    };
+    viewer.container.addEventListener(
+      "pointerenter",
+      maybePreloadFromMarkerEvent,
+      true,
+    );
+    viewer.container.addEventListener(
+      "pointerdown",
+      maybePreloadFromMarkerEvent,
+      true,
+    );
+
     if (mode === "edit" && currentSceneId) {
       syncEditMarkers(
         markersPlugin,
@@ -1271,6 +1486,17 @@ export function PanoramaViewer({
       bootstrapSceneIdRef.current = null;
       introHandleRef.current?.cancel();
       introHandleRef.current = null;
+      setLinkWaitHint(false);
+      viewer.container.removeEventListener(
+        "pointerenter",
+        maybePreloadFromMarkerEvent,
+        true,
+      );
+      viewer.container.removeEventListener(
+        "pointerdown",
+        maybePreloadFromMarkerEvent,
+        true,
+      );
       // Invalidate in-flight setCurrentNode chains before destroy so they
       // abort cleanly instead of calling loadNode on a deleted datasource
       // (React Strict Mode remount).
@@ -1283,6 +1509,7 @@ export function PanoramaViewer({
       viewer.destroy();
       viewerRef.current = null;
       nodesKeyRef.current = "";
+      preloadPromisesRef.current.clear();
     };
     // Recreate on empty↔non-empty and explicit retry. Scene/hotspot updates
     // go through the nodes effect below. Do NOT recreate for intro/transition
@@ -1769,6 +1996,17 @@ export function PanoramaViewer({
           aria-hidden
         >
           <div className="size-8 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+        </div>
+      ) : null}
+
+      {linkWaitHint && panoramaRevealed && !showFailure ? (
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-8 z-[70] flex justify-center"
+          aria-live="polite"
+        >
+          <span className="rounded-md bg-black/55 px-3 py-1.5 text-xs text-white/80 backdrop-blur-sm">
+            Loading next scene…
+          </span>
         </div>
       ) : null}
 
