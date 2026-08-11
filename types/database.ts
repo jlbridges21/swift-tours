@@ -143,6 +143,7 @@ export type Database = {
           position: number;
           initial_yaw: number;
           initial_pitch: number;
+          has_initial_view: boolean;
           group_id: string | null;
           floor_plan_id: string | null;
           plan_x: number | null;
@@ -167,6 +168,7 @@ export type Database = {
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
+          has_initial_view?: boolean;
           group_id?: string | null;
           floor_plan_id?: string | null;
           plan_x?: number | null;
@@ -191,6 +193,7 @@ export type Database = {
           position?: number;
           initial_yaw?: number;
           initial_pitch?: number;
+          has_initial_view?: boolean;
           group_id?: string | null;
           floor_plan_id?: string | null;
           plan_x?: number | null;

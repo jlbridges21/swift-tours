@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
+  clearSceneInitialView,
   createHotspot,
   updateHotspot,
   updateSceneInitialView,
@@ -210,7 +211,6 @@ function TourEditorInner({
     tour.transition_zoom,
     tour.transition_rotation,
     tour.transition_motion_blur,
-    tour.walkthrough_enabled,
     tour.gyroscope_enabled,
     tour.vr_enabled,
   ]);
@@ -318,11 +318,41 @@ function TourEditorInner({
     setScenes((prev) =>
       prev.map((scene) =>
         scene.id === activeScene.id
-          ? { ...scene, initial_yaw: yaw, initial_pitch: pitch }
+          ? {
+              ...scene,
+              initial_yaw: yaw,
+              initial_pitch: pitch,
+              has_initial_view: true,
+            }
           : scene,
       ),
     );
     toast.success("Initial view saved");
+  }
+
+  async function removeInitialView() {
+    if (!activeScene) return;
+    if (!activeScene.has_initial_view) return;
+
+    const ok = await run(() => clearSceneInitialView(activeScene.id));
+    if (!ok) {
+      toast.error("Could not remove initial view");
+      return;
+    }
+
+    setScenes((prev) =>
+      prev.map((scene) =>
+        scene.id === activeScene.id
+          ? {
+              ...scene,
+              initial_yaw: 0,
+              initial_pitch: 0,
+              has_initial_view: false,
+            }
+          : scene,
+      ),
+    );
+    toast.success("Initial view removed");
   }
 
   function faceHotspot(hotspot: Hotspot) {
@@ -757,6 +787,25 @@ function TourEditorInner({
                   <span className="text-muted-foreground">No scene selected</span>
                 )}
               </p>
+              {activeScene ? (
+                <span
+                  className={cn(
+                    "hidden shrink-0 text-[11px] sm:inline",
+                    activeScene.has_initial_view
+                      ? "text-foreground"
+                      : "text-muted-foreground",
+                  )}
+                  title={
+                    activeScene.has_initial_view
+                      ? "This scene has a saved initial view"
+                      : "No initial view set — link arrivals use walkthrough heading"
+                  }
+                >
+                  {activeScene.has_initial_view
+                    ? "Initial view set"
+                    : "No initial view"}
+                </span>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
@@ -768,6 +817,26 @@ function TourEditorInner({
                 }}
               >
                 {status === "saving" ? "Saving…" : "Set as initial view"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={
+                  !activeScene ||
+                  !activeScene.has_initial_view ||
+                  status === "saving"
+                }
+                title={
+                  activeScene?.has_initial_view
+                    ? "Clear the saved landing angle for this scene"
+                    : "This scene has no initial view to remove"
+                }
+                onClick={() => {
+                  void removeInitialView();
+                }}
+              >
+                Remove initial view
               </Button>
             </div>
           </div>

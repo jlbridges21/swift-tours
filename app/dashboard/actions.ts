@@ -759,6 +759,7 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           position: scene.position,
           initial_yaw: scene.initial_yaw,
           initial_pitch: scene.initial_pitch,
+          has_initial_view: scene.has_initial_view,
           group_id: scene.group_id
             ? (groupIdMap.get(scene.group_id) ?? null)
             : null,

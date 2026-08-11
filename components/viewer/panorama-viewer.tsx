@@ -90,6 +90,7 @@ export type PanoramaViewerScene = Pick<
   | "height"
   | "initial_yaw"
   | "initial_pitch"
+  | "has_initial_view"
   | "nadir_patch_path"
   | "nadir_disabled"
   | "adjust_brightness"
@@ -121,6 +122,7 @@ export type PanoramaViewerHotspot = Pick<
   | "style_rotation"
   | "orient_yaw"
   | "orient_pitch"
+  | "created_at"
 >;
 
 /** Tour-level nadir render settings (size/opacity/rotation are live; patch is per-scene). */
@@ -392,9 +394,11 @@ function buildNodes(
 
     // Per-scene landing view — VirtualTourNode has no native startPosition in 5.15.1,
     // so we stash radians on node.data and apply them on node-changed (unless fromLink).
+    // hasInitialView gates whether initialYaw/Pitch are intentional (vs unset 0,0).
     const nodeData = {
       initialYaw: scene.initial_yaw,
       initialPitch: scene.initial_pitch,
+      hasInitialView: Boolean(scene.has_initial_view),
     };
 
     const panorama = panoramaUrlForScene(scene);
@@ -552,15 +556,20 @@ function applyNodeInitialView(
   node: VirtualTourNode,
   fromLink: unknown,
 ) {
-  // Link navigation: keep viewing direction for spatial continuity.
+  // Link navigation: orientation is baked via transitionOptions.rotateTo.
   if (fromLink) return;
 
   const data = node.data as
-    | { initialYaw?: number; initialPitch?: number }
+    | {
+        initialYaw?: number;
+        initialPitch?: number;
+        hasInitialView?: boolean;
+      }
     | undefined;
+  if (!data?.hasInitialView) return;
   if (
-    typeof data?.initialYaw !== "number" ||
-    typeof data?.initialPitch !== "number"
+    typeof data.initialYaw !== "number" ||
+    typeof data.initialPitch !== "number"
   ) {
     return;
   }
@@ -568,41 +577,61 @@ function applyNodeInitialView(
   viewer.rotate({ yaw: data.initialYaw, pitch: data.initialPitch });
 }
 
+type NodeViewData = {
+  initialYaw?: number;
+  initialPitch?: number;
+  hasInitialView?: boolean;
+};
+
 /**
- * Walkthrough arrival for A→B link nav.
- * Prefer return-hotspot reciprocity; else first visit uses initial_yaw;
- * else preserve the current heading.
+ * Link-nav arrival heading (baked into setPanorama before reveal).
+ * Precedence:
+ *   1. Destination has an explicit initial view → initial_yaw / initial_pitch
+ *   2. Destination has a return link to the origin → return.yaw + π, pitch 0
+ *   3. Neither → preserve the incoming camera heading
  */
-function resolveWalkthroughRotateTo(
+function resolveLinkArrivalRotateTo(
   fromSceneId: string | undefined,
   toNode: VirtualTourNode,
   viewer: Viewer,
   hotspots: PanoramaViewerHotspot[],
-  visited: Set<string>,
-): { yaw: number; pitch: number } | null {
-  if (!fromSceneId) return null;
-
-  const returnLink = hotspots.find(
-    (h) =>
-      h.scene_id === toNode.id &&
-      h.target_scene_id === fromSceneId &&
-      h.type === "link",
-  );
-  if (returnLink) {
-    return { yaw: walkthroughArrivalYaw(returnLink.yaw), pitch: 0 };
+): { yaw: number; pitch: number; reason: "initial" | "return" | "preserve" } {
+  const data = toNode.data as NodeViewData | undefined;
+  if (
+    data?.hasInitialView &&
+    typeof data.initialYaw === "number" &&
+    typeof data.initialPitch === "number"
+  ) {
+    return {
+      yaw: data.initialYaw,
+      pitch: data.initialPitch,
+      reason: "initial",
+    };
   }
 
-  if (!visited.has(toNode.id)) {
-    const data = toNode.data as
-      | { initialYaw?: number; initialPitch?: number }
-      | undefined;
-    if (typeof data?.initialYaw === "number") {
-      return { yaw: data.initialYaw, pitch: 0 };
+  if (fromSceneId) {
+    // If more than one return link matches, take the earliest by created_at
+    // (ambiguous pairing — prefer the first-created hotspot).
+    const returnLinks = hotspots
+      .filter(
+        (h) =>
+          h.scene_id === toNode.id &&
+          h.target_scene_id === fromSceneId &&
+          h.type === "link",
+      )
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    const returnLink = returnLinks[0];
+    if (returnLink) {
+      return {
+        yaw: walkthroughArrivalYaw(returnLink.yaw),
+        pitch: 0,
+        reason: "return",
+      };
     }
   }
 
   const current = viewer.getPosition();
-  return { yaw: current.yaw, pitch: current.pitch };
+  return { yaw: current.yaw, pitch: current.pitch, reason: "preserve" };
 }
 
 type CanvasVisualState = {
@@ -912,9 +941,17 @@ export function PanoramaViewer({
       container: containerRef.current,
       navbar: ["zoom", "move", "fullscreen"],
       // Little-planet opens looking straight down, fisheye on, fully zoomed out.
-      // Normal tours use the start scene's stored landing angles.
-      defaultYaw: wantIntro ? 0 : startScene.initial_yaw,
-      defaultPitch: wantIntro ? -Math.PI / 2 : startScene.initial_pitch,
+      // Normal tours use the start scene's stored landing angles only when set.
+      defaultYaw: wantIntro
+        ? 0
+        : startScene.has_initial_view
+          ? startScene.initial_yaw
+          : 0,
+      defaultPitch: wantIntro
+        ? -Math.PI / 2
+        : startScene.has_initial_view
+          ? startScene.initial_pitch
+          : 0,
       defaultZoomLvl: wantIntro ? 0 : 50,
       fisheye: wantIntro ? 1 : 0,
       mousewheel: true,
@@ -960,49 +997,37 @@ export function PanoramaViewer({
                   : undefined,
             };
 
-            // Bake initial view into setPanorama for non-link navigations so the
-            // texture never appears at the wrong angle (pano XMP / 0,0) and then
-            // snaps. Link navigations keep fromLinkPosition from the VT plugin.
+            // Bake orientation into setPanorama before reveal (no post-load snap).
+            // Link nav: initial view → return-hotspot behind → preserve heading.
+            // Direct selection: initial view only (else PSV keeps current / defaults).
             let result = base;
             if (fromLink || introPendingRef.current) {
               result = base;
 
-              // Walkthrough: override arrival heading on link nav only.
-              if (
-                fromLink &&
-                viewerEffectsRef.current.walkthroughEnabled &&
-                from?.id
-              ) {
-                const arrival = resolveWalkthroughRotateTo(
+              if (fromLink && from?.id) {
+                const arrival = resolveLinkArrivalRotateTo(
                   from.id,
                   to,
                   viewer,
                   hotspotsRef.current,
-                  visitedScenesRef.current,
                 );
-                if (arrival) {
-                  const returnLink = hotspotsRef.current.find(
-                    (h) =>
-                      h.scene_id === to.id &&
-                      h.target_scene_id === from.id &&
-                      h.type === "link",
-                  );
-                  const firstVisit = !visitedScenesRef.current.has(to.id);
-                  result = {
-                    ...result,
-                    rotateTo: arrival,
-                    // Animate toward return/initial; preserve heading without a spin.
-                    rotation: Boolean(returnLink) || firstVisit,
-                  };
-                }
+                result = {
+                  ...result,
+                  rotateTo: {
+                    yaw: arrival.yaw,
+                    pitch: arrival.pitch,
+                  },
+                  // Bake heading into setPanorama (no animated spin) so orientation
+                  // is applied before the new panorama is revealed.
+                  rotation: false,
+                };
               }
             } else {
-              const data = to.data as
-                | { initialYaw?: number; initialPitch?: number }
-                | undefined;
+              const data = to.data as NodeViewData | undefined;
               if (
-                typeof data?.initialYaw === "number" &&
-                typeof data?.initialPitch === "number"
+                data?.hasInitialView &&
+                typeof data.initialYaw === "number" &&
+                typeof data.initialPitch === "number"
               ) {
                 result = {
                   ...base,
@@ -1117,18 +1142,20 @@ export function PanoramaViewer({
       introPendingRef.current = false;
       introRanRef.current = true;
 
-      const data = node.data as
-        | { initialYaw?: number; initialPitch?: number }
-        | undefined;
+      const data = node.data as NodeViewData | undefined;
       const target = {
         yaw:
-          typeof data?.initialYaw === "number"
+          data?.hasInitialView && typeof data.initialYaw === "number"
             ? data.initialYaw
-            : startScene.initial_yaw,
+            : startScene.has_initial_view
+              ? startScene.initial_yaw
+              : 0,
         pitch:
-          typeof data?.initialPitch === "number"
+          data?.hasInitialView && typeof data.initialPitch === "number"
             ? data.initialPitch
-            : startScene.initial_pitch,
+            : startScene.has_initial_view
+              ? startScene.initial_pitch
+              : 0,
         zoom: 50,
       };
 
@@ -1249,18 +1276,16 @@ export function PanoramaViewer({
 
           // Kick preload immediately on click (also started on pointerenter).
           const preloadPromise = preloadSceneTexture(targetId);
-          const walkthroughOn =
-            viewerEffectsRef.current.walkthroughEnabled &&
-            !prefersReducedMotion();
+          // Slight ease-in only for the Zoom (walk-in) transition preset.
+          const easeInSlightly =
+            resolved.isZoomWalkIn && !prefersReducedMotion();
 
-          /** Land fully zoomed out; walkthrough alone eases in slightly (≈8%). */
-          const beginArrivalZoom = (fadeMs: number) => {
-            // BEFORE the new scene fades in — max FOV, no post-reveal snap.
+          /** Max FOV before the new scene is revealed (heading baked separately). */
+          const applyWideZoom = () => {
             viewer.zoom(ZOOM_WIDE);
-            if (!walkthroughOn) {
-              applyMotionFrame(0, 1);
-              return;
-            }
+          };
+
+          const startWalkInSettle = (fadeMs: number) => {
             motionBlurCancelRef.current?.();
             motionBlurCancelRef.current = runArrivalSettleAnimation(
               fadeMs,
@@ -1339,19 +1364,23 @@ export function PanoramaViewer({
 
               if (cancelled) return;
 
-              beginArrivalZoom(fadeMs);
-
+              // Heading is baked in transitionOptions.rotateTo (applied as setPanorama
+              // starts). Zoom is set wide before reveal; Zoom walk-in then eases in.
+              applyWideZoom();
               void tour.setCurrentNode(
                 targetId,
                 {
                   effect: "fade",
                   speed: fadeMs,
                   showLoader: false,
-                  // Zoom owned by beginArrivalZoom — do not pass zoomTo.
-                  rotation: walkthroughOn,
                 },
                 fromLink,
               );
+              if (easeInSlightly) {
+                startWalkInSettle(fadeMs);
+              } else {
+                applyMotionFrame(0, 1);
+              }
             })();
             return;
           }
@@ -1389,13 +1418,17 @@ export function PanoramaViewer({
             if (cancelled) return;
 
             const fadeMs = resolved.speed;
-            beginArrivalZoom(fadeMs);
-
+            applyWideZoom();
             void tour.setCurrentNode(
               targetId,
               { showLoader: false },
               fromLink,
             );
+            if (easeInSlightly) {
+              startWalkInSettle(fadeMs);
+            } else {
+              applyMotionFrame(0, 1);
+            }
           })();
         }
         return;
@@ -1543,9 +1576,7 @@ export function PanoramaViewer({
 
     const tour = viewer.getPlugin<VirtualTourPlugin>(VirtualTourPlugin);
     const node = tour?.getCurrentNode();
-    const data = node?.data as
-      | { initialYaw?: number; initialPitch?: number }
-      | undefined;
+    const data = node?.data as NodeViewData | undefined;
     const scene =
       scenes.find((s) => s.id === (currentSceneId ?? startSceneId)) ??
       scenes[0];
@@ -1555,13 +1586,17 @@ export function PanoramaViewer({
     applyLittlePlanetPose(viewer);
     introHandleRef.current = runLittlePlanetIntro(viewer, {
       yaw:
-        typeof data?.initialYaw === "number"
+        data?.hasInitialView && typeof data.initialYaw === "number"
           ? data.initialYaw
-          : scene.initial_yaw,
+          : scene.has_initial_view
+            ? scene.initial_yaw
+            : 0,
       pitch:
-        typeof data?.initialPitch === "number"
+        data?.hasInitialView && typeof data.initialPitch === "number"
           ? data.initialPitch
-          : scene.initial_pitch,
+          : scene.has_initial_view
+            ? scene.initial_pitch
+            : 0,
       zoom: 50,
     });
   }, [

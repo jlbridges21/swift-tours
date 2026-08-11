@@ -120,7 +120,6 @@ function effectsFromTour(tour: Tour): ViewerEffectsSettings {
       rotation: tour.transition_rotation ?? true,
       motionBlur: tour.transition_motion_blur ?? false,
     },
-    walkthroughEnabled: tour.walkthrough_enabled ?? false,
     gyroscopeEnabled: tour.gyroscope_enabled ?? true,
     vrEnabled: tour.vr_enabled ?? true,
   };

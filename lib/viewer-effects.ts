@@ -55,8 +55,11 @@ export type ViewerTransitionSettings = {
 export type ViewerEffectsSettings = {
   introEffect: IntroEffect;
   transition: ViewerTransitionSettings;
-  /** Keep heading consistent via return-hotspot reciprocity on link nav. */
-  walkthroughEnabled: boolean;
+  /**
+   * @deprecated Walkthrough heading is always applied on link nav.
+   * tours.walkthrough_enabled is vestigial — kept in the DB, unused in the viewer.
+   */
+  walkthroughEnabled?: boolean;
   gyroscopeEnabled: boolean;
   vrEnabled: boolean;
 };
@@ -70,7 +73,6 @@ export const DEFAULT_VIEWER_EFFECTS: ViewerEffectsSettings = {
     rotation: true,
     motionBlur: false,
   },
-  walkthroughEnabled: false,
   gyroscopeEnabled: true,
   vrEnabled: true,
 };
@@ -167,10 +169,13 @@ export function normalizeYaw(yaw: number): number {
 
 /**
  * Walkthrough arrival yaw: face forward out of the return doorway
- * (return hotspot yaw + π). Pitch stays level (0).
+ * (return hotspot yaw + π). Normalized to [0, 2π).
  */
 export function walkthroughArrivalYaw(returnHotspotYaw: number): number {
-  return normalizeYaw(returnHotspotYaw + Math.PI);
+  const twoPi = Math.PI * 2;
+  let value = (returnHotspotYaw + Math.PI) % twoPi;
+  if (value < 0) value += twoPi;
+  return value;
 }
 
 export function easeOutCubic(t: number): number {

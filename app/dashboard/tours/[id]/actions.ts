@@ -699,11 +699,64 @@ export async function updateSceneInitialView(
     return { error: owned.error };
   }
 
+  if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+    return { error: "Invalid camera angles." };
+  }
+
   const { error } = await supabase
     .from("scenes")
     .update({
       initial_yaw: yaw,
       initial_pitch: pitch,
+      has_initial_view: true,
+    })
+    .eq("id", sceneId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(scene.tour_id, owned.tour?.slug);
+  return {};
+}
+
+export async function clearSceneInitialView(
+  sceneId: string,
+): Promise<SceneActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "You must be signed in." };
+  }
+
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+
+  if (!scene) {
+    return { error: "Scene not found." };
+  }
+
+  const owned = await requireOwnedTour(scene.tour_id);
+  if (owned.error) {
+    return { error: owned.error };
+  }
+
+  const { error } = await supabase
+    .from("scenes")
+    .update({
+      initial_yaw: 0,
+      initial_pitch: 0,
+      has_initial_view: false,
     })
     .eq("id", sceneId);
 
