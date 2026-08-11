@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, CopyIcon, ExternalLinkIcon } from "lucide-react";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { setTourPublic, listOwnedTourScenes } from "@/app/dashboard/actions";
@@ -22,6 +22,7 @@ import {
   buildJavaScriptSnippet,
   buildPublicTourUrl,
   buildResponsiveIframeSnippet,
+  isValidSceneIdParam,
 } from "@/lib/embed-options";
 import { clientSiteOrigin } from "@/lib/site-url";
 import { cn } from "@/lib/utils";
@@ -48,12 +49,96 @@ type EmbedDialogProps = {
 
 type TabId = "link" | "iframe" | "javascript" | "unbranded";
 
+type EmbedOptionState = {
+  width: number;
+  height: number;
+  responsive: boolean;
+  showTitle: boolean;
+  showThumbs: boolean;
+  showShare: boolean;
+  showFullscreen: boolean;
+  autorotate: boolean;
+  startSceneId: string;
+};
+
+const DEFAULT_OPTIONS: EmbedOptionState = {
+  width: 800,
+  height: 450,
+  responsive: true,
+  showTitle: true,
+  showThumbs: true,
+  showShare: true,
+  showFullscreen: true,
+  autorotate: false,
+  startSceneId: "",
+};
+
 const TABS: { id: TabId; label: string }[] = [
   { id: "link", label: "Link" },
   { id: "iframe", label: "iframe" },
   { id: "javascript", label: "JavaScript" },
   { id: "unbranded", label: "Unbranded" },
 ];
+
+function embedOptionsStorageKey(tourId: string): string {
+  return `swift-tours:embed-options:${tourId}`;
+}
+
+function readStoredOptions(tourId: string): EmbedOptionState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(embedOptionsStorageKey(tourId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<EmbedOptionState>;
+    return {
+      width:
+        typeof parsed.width === "number" && parsed.width > 0
+          ? parsed.width
+          : DEFAULT_OPTIONS.width,
+      height:
+        typeof parsed.height === "number" && parsed.height > 0
+          ? parsed.height
+          : DEFAULT_OPTIONS.height,
+      responsive:
+        typeof parsed.responsive === "boolean"
+          ? parsed.responsive
+          : DEFAULT_OPTIONS.responsive,
+      showTitle:
+        typeof parsed.showTitle === "boolean"
+          ? parsed.showTitle
+          : DEFAULT_OPTIONS.showTitle,
+      showThumbs:
+        typeof parsed.showThumbs === "boolean"
+          ? parsed.showThumbs
+          : DEFAULT_OPTIONS.showThumbs,
+      showShare:
+        typeof parsed.showShare === "boolean"
+          ? parsed.showShare
+          : DEFAULT_OPTIONS.showShare,
+      showFullscreen:
+        typeof parsed.showFullscreen === "boolean"
+          ? parsed.showFullscreen
+          : DEFAULT_OPTIONS.showFullscreen,
+      autorotate:
+        typeof parsed.autorotate === "boolean"
+          ? parsed.autorotate
+          : DEFAULT_OPTIONS.autorotate,
+      startSceneId:
+        typeof parsed.startSceneId === "string" ? parsed.startSceneId : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredOptions(tourId: string, options: EmbedOptionState): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(embedOptionsStorageKey(tourId), JSON.stringify(options));
+  } catch {
+    // Quota / private mode — ignore.
+  }
+}
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -120,39 +205,81 @@ export function EmbedDialog({
   const [tab, setTab] = useState<TabId>("link");
   const [isPublic, setIsPublic] = useState(tour.is_public);
   const [scenes, setScenes] = useState<EmbedDialogScene[]>(scenesProp ?? []);
-  const [width, setWidth] = useState(800);
-  const [height, setHeight] = useState(450);
-  const [responsive, setResponsive] = useState(true);
-  const [showTitle, setShowTitle] = useState(true);
-  const [showThumbs, setShowThumbs] = useState(true);
-  const [showShare, setShowShare] = useState(true);
-  const [showFullscreen, setShowFullscreen] = useState(true);
-  const [autorotate, setAutorotate] = useState(false);
-  const [startSceneId, setStartSceneId] = useState<string>("");
+  const [width, setWidth] = useState(DEFAULT_OPTIONS.width);
+  const [height, setHeight] = useState(DEFAULT_OPTIONS.height);
+  const [responsive, setResponsive] = useState(DEFAULT_OPTIONS.responsive);
+  const [showTitle, setShowTitle] = useState(DEFAULT_OPTIONS.showTitle);
+  const [showThumbs, setShowThumbs] = useState(DEFAULT_OPTIONS.showThumbs);
+  const [showShare, setShowShare] = useState(DEFAULT_OPTIONS.showShare);
+  const [showFullscreen, setShowFullscreen] = useState(
+    DEFAULT_OPTIONS.showFullscreen,
+  );
+  const [autorotate, setAutorotate] = useState(DEFAULT_OPTIONS.autorotate);
+  const [startSceneId, setStartSceneId] = useState(DEFAULT_OPTIONS.startSceneId);
   const [pending, startTransition] = useTransition();
+  const wasOpenRef = useRef(false);
+  const scenesPropKey = useMemo(
+    () =>
+      scenesProp
+        ? scenesProp.map((scene) => `${scene.id}:${scene.name}`).join("|")
+        : "",
+    [scenesProp],
+  );
+
+  // Restore options once per open; reset the tab to Link.
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setIsPublic(tour.is_public);
+      setTab("link");
+      const stored = readStoredOptions(tour.id);
+      if (stored) {
+        setWidth(stored.width);
+        setHeight(stored.height);
+        setResponsive(stored.responsive);
+        setShowTitle(stored.showTitle);
+        setShowThumbs(stored.showThumbs);
+        setShowShare(stored.showShare);
+        setShowFullscreen(stored.showFullscreen);
+        setAutorotate(stored.autorotate);
+        setStartSceneId(stored.startSceneId);
+      }
+    }
+    wasOpenRef.current = open;
+  }, [open, tour.id, tour.is_public]);
 
   useEffect(() => {
     if (!open) return;
-    setIsPublic(tour.is_public);
-    setTab("link");
     if (scenesProp) {
       setScenes(scenesProp);
       return;
     }
     void listOwnedTourScenes(tour.id).then(setScenes);
-  }, [open, tour.is_public, tour.id, scenesProp]);
+  }, [open, tour.id, scenesPropKey, scenesProp]);
 
-  const origin = clientSiteOrigin();
-  const snippetOptions = useMemo(
+  // Drop a stored start id that no longer exists in this tour.
+  useEffect(() => {
+    if (!startSceneId || scenes.length === 0) return;
+    if (!scenes.some((scene) => scene.id === startSceneId)) {
+      setStartSceneId("");
+    }
+  }, [scenes, startSceneId]);
+
+  const optionState = useMemo<EmbedOptionState>(
     () => ({
+      width,
+      height,
+      responsive,
       showTitle,
       showThumbs,
       showShare,
       showFullscreen,
       autorotate,
-      startSceneId: startSceneId || null,
+      startSceneId,
     }),
     [
+      width,
+      height,
+      responsive,
       showTitle,
       showThumbs,
       showShare,
@@ -162,7 +289,37 @@ export function EmbedDialog({
     ],
   );
 
-  const publicUrl = buildPublicTourUrl(origin, tour.slug);
+  useEffect(() => {
+    if (!open) return;
+    writeStoredOptions(tour.id, optionState);
+  }, [open, tour.id, optionState]);
+
+  const origin = clientSiteOrigin();
+  const snippetStartId = isValidSceneIdParam(startSceneId)
+    ? startSceneId
+    : null;
+  const snippetOptions = useMemo(
+    () => ({
+      showTitle,
+      showThumbs,
+      showShare,
+      showFullscreen,
+      autorotate,
+      startSceneId: snippetStartId,
+    }),
+    [
+      showTitle,
+      showThumbs,
+      showShare,
+      showFullscreen,
+      autorotate,
+      snippetStartId,
+    ],
+  );
+
+  const publicUrl = buildPublicTourUrl(origin, tour.slug, {
+    startSceneId: snippetStartId,
+  });
   const embedUrl = buildEmbedUrl(origin, tour.slug, snippetOptions);
   const unbrandedUrl = buildEmbedUrl(origin, tour.slug, {
     ...snippetOptions,
@@ -321,7 +478,7 @@ export function EmbedDialog({
                     value={startSceneId}
                     onChange={(event) => setStartSceneId(event.target.value)}
                   >
-                    <option value="">Cover / default</option>
+                    <option value="">Tour default</option>
                     {scenes.map((scene) => (
                       <option key={scene.id} value={scene.id}>
                         {scene.name}

@@ -99,6 +99,8 @@ export async function updateTour(
     transition_rotation?: boolean;
     gyroscope_enabled?: boolean;
     vr_enabled?: boolean;
+    cover_scene_id?: string | null;
+    start_scene_id?: string | null;
   },
 ): Promise<ActionResult> {
   const supabase = await createClient();
@@ -146,6 +148,30 @@ export async function updateTour(
     return { error: "Transition speed must be between 300 and 5000 ms." };
   }
 
+  if (input.cover_scene_id || input.start_scene_id) {
+    const ids = [input.cover_scene_id, input.start_scene_id].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+    if (ids.length > 0) {
+      const { data: ownedScenes, error: sceneCheckError } = await supabase
+        .from("scenes")
+        .select("id")
+        .eq("tour_id", id)
+        .in("id", ids);
+
+      if (sceneCheckError) {
+        return { error: sceneCheckError.message };
+      }
+      const owned = new Set((ownedScenes ?? []).map((row) => row.id));
+      if (input.cover_scene_id && !owned.has(input.cover_scene_id)) {
+        return { error: "Cover scene must belong to this tour." };
+      }
+      if (input.start_scene_id && !owned.has(input.start_scene_id)) {
+        return { error: "Start scene must belong to this tour." };
+      }
+    }
+  }
+
   const { data: tour, error } = await supabase
     .from("tours")
     .update({
@@ -178,6 +204,12 @@ export async function updateTour(
         : {}),
       ...(input.vr_enabled !== undefined
         ? { vr_enabled: input.vr_enabled }
+        : {}),
+      ...(input.cover_scene_id !== undefined
+        ? { cover_scene_id: input.cover_scene_id }
+        : {}),
+      ...(input.start_scene_id !== undefined
+        ? { start_scene_id: input.start_scene_id }
         : {}),
     })
     .eq("id", id)
@@ -977,11 +1009,17 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
       const newCoverSceneId = original.cover_scene_id
         ? (sceneIdMap.get(original.cover_scene_id) ?? null)
         : null;
+      const newStartSceneId = original.start_scene_id
+        ? (sceneIdMap.get(original.start_scene_id) ?? null)
+        : null;
 
-      if (newCoverSceneId) {
+      if (newCoverSceneId || newStartSceneId) {
         const { error: coverError } = await supabase
           .from("tours")
-          .update({ cover_scene_id: newCoverSceneId })
+          .update({
+            cover_scene_id: newCoverSceneId,
+            start_scene_id: newStartSceneId,
+          })
           .eq("id", newTourId);
 
         if (coverError) {

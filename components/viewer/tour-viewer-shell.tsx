@@ -26,6 +26,7 @@ import { VrToggle } from "@/components/viewer/vr-toggle";
 import { Button } from "@/components/ui/button";
 import { resolvePanoramaPath } from "@/lib/gl-capabilities";
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
+import { resolveOpeningSceneId } from "@/lib/start-scene";
 import { publicUrl } from "@/lib/storage";
 import {
   DEFAULT_VIEWER_EFFECTS,
@@ -77,7 +78,7 @@ export type TourViewerShellProps = {
    * Single switch; overrides showTitle/showShare.
    */
   branded?: boolean;
-  /** Override cover scene for initial view. */
+  /** Optional `?start=` override (must match a scene in this tour). */
   startSceneId?: string | null;
   /** Post ready/dimensions to parent (iframe embeds). */
   embedMode?: boolean;
@@ -90,21 +91,6 @@ export type TourViewerShellProps = {
   /** Increment to replay little-planet intro. */
   introReplayNonce?: number;
 };
-
-function resolveStartSceneId(
-  tour: Tour,
-  scenes: Scene[],
-  override?: string | null,
-): string | undefined {
-  if (override && scenes.some((scene) => scene.id === override)) {
-    return override;
-  }
-  if (tour.cover_scene_id) {
-    const cover = scenes.find((s) => s.id === tour.cover_scene_id);
-    if (cover) return cover.id;
-  }
-  return scenes[0]?.id;
-}
 
 function effectsFromTour(tour: Tour): ViewerEffectsSettings {
   return {
@@ -190,12 +176,13 @@ export function TourViewerShell({
   );
 
   const startSceneId = useMemo(
-    () => resolveStartSceneId(tour, orderedScenes, startSceneOverride),
+    () => resolveOpeningSceneId(tour, orderedScenes, startSceneOverride),
     [tour, orderedScenes, startSceneOverride],
   );
-  const [currentSceneId, setCurrentSceneId] = useState<string | null>(
-    startSceneId ?? null,
-  );
+  // null until the viewer reports a scene — coalesce with resolved start so a
+  // late-arriving `?start=` override is not frozen behind the first paint.
+  const [currentSceneId, setCurrentSceneId] = useState<string | null>(null);
+  const effectiveSceneId = currentSceneId ?? startSceneId ?? null;
   const [firstSceneReady, setFirstSceneReady] = useState(false);
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [galleryHotspotId, setGalleryHotspotId] = useState<string | null>(null);
@@ -222,17 +209,20 @@ export function TourViewerShell({
   );
 
   const effects = useMemo(() => effectsFromTour(tour), [tour]);
-  const coverId = tour.cover_scene_id ?? orderedScenes[0]?.id ?? null;
-  // Skip intro when starting on a non-cover scene (?start=) or intro=0.
+  const defaultOpeningId = useMemo(
+    () => resolveOpeningSceneId(tour, orderedScenes, null),
+    [tour, orderedScenes],
+  );
+  // Skip intro when `?start=` lands on a scene other than the tour default.
   const runIntro =
     allowIntro &&
     effects.introEffect === "little_planet" &&
-    (!startSceneOverride || startSceneOverride === coverId);
+    (!startSceneOverride || startSceneOverride === defaultOpeningId);
 
   const currentScene =
-    orderedScenes.find((s) => s.id === currentSceneId) ?? orderedScenes[0];
+    orderedScenes.find((s) => s.id === effectiveSceneId) ?? orderedScenes[0];
   const preloadUrl = firstSceneReady
-    ? nextLikelyPanorama(currentSceneId, hotspots, orderedScenes)
+    ? nextLikelyPanorama(effectiveSceneId, hotspots, orderedScenes)
     : null;
 
   const hasGroups = groups.length > 0;
@@ -240,7 +230,7 @@ export function TourViewerShell({
   const [selectedGroupKey, setSelectedGroupKey] = useAutoSelectedGroupKey(
     groups,
     orderedScenes,
-    currentSceneId,
+    effectiveSceneId,
   );
 
   const stripScenes = useMemo(() => {
@@ -255,8 +245,8 @@ export function TourViewerShell({
       (hasGroups && stripScenes.length > 0));
 
   const currentFloorPlan = useMemo(
-    () => resolveCurrentFloorPlan(orderedScenes, floorPlans, currentSceneId),
-    [orderedScenes, floorPlans, currentSceneId],
+    () => resolveCurrentFloorPlan(orderedScenes, floorPlans, effectiveSceneId),
+    [orderedScenes, floorPlans, effectiveSceneId],
   );
   const showFloorPlanChrome = showPlan && currentFloorPlan != null;
   // Always start closed on a fresh load — do not restore localStorage.
@@ -324,7 +314,7 @@ export function TourViewerShell({
           ref={analyticsRef}
           tourId={tour.id}
           isEmbed={embedMode}
-          currentSceneId={currentSceneId}
+          currentSceneId={effectiveSceneId}
         />
       ) : null}
 
@@ -448,7 +438,7 @@ export function TourViewerShell({
         <FloorPlanPanel
           scenes={orderedScenes}
           floorPlans={floorPlans}
-          currentSceneId={currentSceneId}
+          currentSceneId={effectiveSceneId}
           onSelectScene={setCurrentSceneId}
           open={planOpen}
           onOpenChange={setPlanOpen}
@@ -467,7 +457,7 @@ export function TourViewerShell({
           ) : null}
           <SceneStrip
             scenes={stripScenes}
-            currentSceneId={currentSceneId}
+            currentSceneId={effectiveSceneId}
             onSelect={setCurrentSceneId}
             embedded
             showWhenSingle={hasGroups && showGroups}

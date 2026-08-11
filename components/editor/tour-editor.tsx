@@ -59,6 +59,8 @@ import {
   sanitizeHotspotColor,
 } from "@/lib/hotspot-styles";
 import { isNadirMarkerId } from "@/lib/nadir";
+import { sortScenesByGroupOrder } from "@/lib/scene-groups";
+import { resolveOpeningSceneId } from "@/lib/start-scene";
 import { cn } from "@/lib/utils";
 import type {
   FloorPlan,
@@ -93,6 +95,15 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return Boolean(
     target.closest("input, textarea, select, [contenteditable=true]"),
   );
+}
+
+function resolveOpeningSceneIdFromInitial(
+  tour: Tour,
+  scenes: Scene[],
+  groups: SceneGroup[],
+): string | null {
+  const ordered = sortScenesByGroupOrder(scenes, groups);
+  return resolveOpeningSceneId(tour, ordered) ?? null;
 }
 
 export function TourEditor(props: TourEditorProps) {
@@ -140,8 +151,8 @@ function TourEditorInner({
     "hotspots" | "nadir" | "adjustments" | "floorplan" | "effects"
   >("hotspots");
   const [adjustmentsBypassed, setAdjustmentsBypassed] = useState(false);
-  const [activeSceneId, setActiveSceneId] = useState<string | null>(
-    initialScenes[0]?.id ?? null,
+  const [activeSceneId, setActiveSceneId] = useState<string | null>(() =>
+    resolveOpeningSceneIdFromInitial(tour, initialScenes, initialGroups),
   );
   const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(
     null,
@@ -221,9 +232,10 @@ function TourEditorInner({
       return;
     }
     if (!activeSceneId || !scenes.some((scene) => scene.id === activeSceneId)) {
-      setActiveSceneId(scenes[0].id);
+      const ordered = sortScenesByGroupOrder(scenes, groups);
+      setActiveSceneId(resolveOpeningSceneId(tour, ordered) ?? scenes[0].id);
     }
-  }, [scenes, activeSceneId]);
+  }, [scenes, groups, tour, activeSceneId]);
 
   useEffect(() => {
     setSelectedHotspotId(null);
@@ -271,6 +283,21 @@ function TourEditorInner({
   const activeScene = useMemo(
     () => scenes.find((scene) => scene.id === activeSceneId) ?? null,
     [scenes, activeSceneId],
+  );
+
+  const orderedScenes = useMemo(
+    () => sortScenesByGroupOrder(scenes, groups),
+    [scenes, groups],
+  );
+
+  const editorStartSceneId = useMemo(
+    () => resolveOpeningSceneId(tour, orderedScenes),
+    [tour, orderedScenes],
+  );
+
+  const embedScenes = useMemo(
+    () => scenes.map((scene) => ({ id: scene.id, name: scene.name })),
+    [scenes],
   );
 
   function pruneHotspotsForScenes(nextScenes: Scene[]) {
@@ -745,7 +772,7 @@ function TourEditorInner({
                 currentSceneId={activeSceneId ?? undefined}
                 selectedHotspotId={selectedHotspotId}
                 placing={Boolean(placingType)}
-                startSceneId={tour.cover_scene_id ?? undefined}
+                startSceneId={editorStartSceneId}
                 mode="edit"
                 className="rounded-none"
                 closeInfoPopoverNonce={closeInfoPopoverNonce}
@@ -1022,7 +1049,7 @@ function TourEditorInner({
 
       <EmbedDialog
         tour={tour}
-        scenes={scenes.map((scene) => ({ id: scene.id, name: scene.name }))}
+        scenes={embedScenes}
         open={embedOpen}
         onOpenChange={setEmbedOpen}
       />

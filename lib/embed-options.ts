@@ -6,6 +6,13 @@
 const SCENE_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/** True when `value` looks like a scene UUID (query-param safe). */
+export function isValidSceneIdParam(
+  value: string | null | undefined,
+): value is string {
+  return typeof value === "string" && SCENE_ID_RE.test(value);
+}
+
 export type EmbedChromeOptions = {
   /** When false, MLS/unbranded mode — hides title, share, and brand marks. */
   branded: boolean;
@@ -60,10 +67,7 @@ export function parseEmbedSearchParams(
 ): EmbedChromeOptions {
   const branded = !isOff(searchParams.get("branded"));
   const startRaw = searchParams.get("start");
-  const startSceneId =
-    typeof startRaw === "string" && SCENE_ID_RE.test(startRaw)
-      ? startRaw
-      : null;
+  const startSceneId = isValidSceneIdParam(startRaw) ? startRaw : null;
 
   let showTitle = !isOff(searchParams.get("title"));
   let showShare = !isOff(searchParams.get("share"));
@@ -114,7 +118,7 @@ export function buildEmbedQuery(options: EmbedSnippetOptions): string {
   if (!options.showThumbs) params.set("thumbs", "0");
   if (!options.showFullscreen) params.set("fs", "0");
   if (options.autorotate) params.set("autorotate", "1");
-  if (options.startSceneId && SCENE_ID_RE.test(options.startSceneId)) {
+  if (isValidSceneIdParam(options.startSceneId)) {
     params.set("start", options.startSceneId);
   }
 
@@ -131,8 +135,16 @@ export function buildEmbedUrl(
   return query ? `${base}?${query}` : base;
 }
 
-export function buildPublicTourUrl(origin: string, slug: string): string {
-  return `${origin.replace(/\/$/, "")}/tour/${encodeURIComponent(slug)}`;
+export function buildPublicTourUrl(
+  origin: string,
+  slug: string,
+  options?: Pick<EmbedSnippetOptions, "startSceneId">,
+): string {
+  const base = `${origin.replace(/\/$/, "")}/tour/${encodeURIComponent(slug)}`;
+  if (isValidSceneIdParam(options?.startSceneId)) {
+    return `${base}?start=${encodeURIComponent(options.startSceneId)}`;
+  }
+  return base;
 }
 
 export function buildFixedIframeSnippet(

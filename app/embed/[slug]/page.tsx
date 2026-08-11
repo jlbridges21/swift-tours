@@ -3,7 +3,6 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { EmbedTourClient } from "@/components/viewer/embed-tour-client";
-import { TourViewerShell } from "@/components/viewer/tour-viewer-shell";
 import { getPublicTourBySlug } from "@/lib/queries/public-tours";
 
 export const revalidate = 60;
@@ -47,16 +46,7 @@ export default async function EmbedTourPage({ params }: PageProps) {
   return (
     <Suspense
       fallback={
-        <TourViewerShell
-          tour={tour}
-          scenes={scenes}
-          groups={groups}
-          floorPlans={floorPlans}
-          hotspots={hotspots}
-          hotspotImages={hotspotImages}
-          trackViews
-          embedMode
-        />
+        <div className="h-dvh w-full bg-black" aria-hidden="true" />
       }
     >
       <EmbedTourClient

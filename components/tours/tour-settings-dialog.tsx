@@ -1,9 +1,13 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
+import { useRouter } from "next/navigation";
 
-import { updateTour } from "@/app/dashboard/actions";
+import {
+  listOwnedTourScenes,
+  updateTour,
+} from "@/app/dashboard/actions";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -36,14 +40,20 @@ type TourSettingsDialogProps = {
   onOpenChange: (open: boolean) => void;
 };
 
+type SceneOption = { id: string; name: string };
+
 export function TourSettingsDialog({
   tour,
   open,
   onOpenChange,
 }: TourSettingsDialogProps) {
+  const router = useRouter();
   const [title, setTitle] = useState(tour.title);
   const [description, setDescription] = useState(tour.description ?? "");
   const [isPublic, setIsPublic] = useState(tour.is_public);
+  const [coverSceneId, setCoverSceneId] = useState(tour.cover_scene_id ?? "");
+  const [startSceneId, setStartSceneId] = useState(tour.start_scene_id ?? "");
+  const [scenes, setScenes] = useState<SceneOption[]>([]);
   const [defaultShape, setDefaultShape] = useState<HotspotShape>(
     isHotspotShape(tour.default_hotspot_shape)
       ? tour.default_hotspot_shape
@@ -59,15 +69,23 @@ export function TourSettingsDialog({
       setTitle(tour.title);
       setDescription(tour.description ?? "");
       setIsPublic(tour.is_public);
+      setCoverSceneId(tour.cover_scene_id ?? "");
+      setStartSceneId(tour.start_scene_id ?? "");
       setDefaultShape(
         isHotspotShape(tour.default_hotspot_shape)
           ? tour.default_hotspot_shape
           : "arrow",
       );
       setDefaultColor(sanitizeHotspotColor(tour.default_hotspot_color));
+      void listOwnedTourScenes(tour.id).then(setScenes);
     }
     onOpenChange(next);
   }
+
+  useEffect(() => {
+    if (!open) return;
+    void listOwnedTourScenes(tour.id).then(setScenes);
+  }, [open, tour.id]);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -78,6 +96,9 @@ export function TourSettingsDialog({
         is_public: isPublic,
         default_hotspot_shape: defaultShape,
         default_hotspot_color: defaultColor,
+        cover_scene_id: coverSceneId || null,
+        // Empty = "Same as cover" → store null so resolution falls through.
+        start_scene_id: startSceneId || null,
       });
 
       if (result.error) {
@@ -87,6 +108,7 @@ export function TourSettingsDialog({
 
       toast.success("Tour updated");
       onOpenChange(false);
+      router.refresh();
     });
   }
 
@@ -96,8 +118,8 @@ export function TourSettingsDialog({
         <DialogHeader>
           <DialogTitle>Tour settings</DialogTitle>
           <DialogDescription>
-            Update the title, description, and visibility. Viewer effects live
-            in the editor under the Effects tab.
+            Update the title, description, visibility, and opening scene. Viewer
+            effects live in the editor under the Effects tab.
           </DialogDescription>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
@@ -135,6 +157,52 @@ export function TourSettingsDialog({
               disabled={pending}
             />
           </div>
+
+          {scenes.length > 0 ? (
+            <div className="flex flex-col gap-3 border-t border-foreground/10 pt-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`cover-${tour.id}`}>Cover scene</Label>
+                <p className="text-xs text-muted-foreground">
+                  Thumbnail for the dashboard card and social previews.
+                </p>
+                <select
+                  id={`cover-${tour.id}`}
+                  className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
+                  value={coverSceneId}
+                  disabled={pending}
+                  onChange={(event) => setCoverSceneId(event.target.value)}
+                >
+                  <option value="">None</option>
+                  {scenes.map((scene) => (
+                    <option key={scene.id} value={scene.id}>
+                      {scene.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`start-${tour.id}`}>Start scene</Label>
+                <p className="text-xs text-muted-foreground">
+                  Where visitors begin the tour. Independent of the cover
+                  thumbnail.
+                </p>
+                <select
+                  id={`start-${tour.id}`}
+                  className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
+                  value={startSceneId}
+                  disabled={pending}
+                  onChange={(event) => setStartSceneId(event.target.value)}
+                >
+                  <option value="">Same as cover</option>
+                  {scenes.map((scene) => (
+                    <option key={scene.id} value={scene.id}>
+                      {scene.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : null}
 
           <div className="flex flex-col gap-2 border-t border-foreground/10 pt-4">
             <Label>Default hotspot style</Label>

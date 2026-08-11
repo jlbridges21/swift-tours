@@ -65,7 +65,7 @@ async function requireOwnedTour(tourId: string) {
   const { data: tour, error } = await supabase
     .from("tours")
     .select(
-      "id, owner_id, cover_scene_id, slug, default_hotspot_shape, default_hotspot_color",
+      "id, owner_id, cover_scene_id, start_scene_id, slug, default_hotspot_shape, default_hotspot_color",
     )
     .eq("id", tourId)
     .maybeSingle();

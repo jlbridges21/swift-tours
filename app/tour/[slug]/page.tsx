@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 
-import { TourViewerShell } from "@/components/viewer/tour-viewer-shell";
+import { PublicTourClient } from "@/components/viewer/public-tour-client";
 import { getPublicTourBySlug } from "@/lib/queries/public-tours";
 import { siteOrigin } from "@/lib/site-url";
 import { publicUrl } from "@/lib/storage";
@@ -80,15 +81,19 @@ export default async function PublicTourPage({ params }: PageProps) {
   const { tour, scenes, groups, floorPlans, hotspots, hotspotImages } = payload;
 
   return (
-    <TourViewerShell
-      tour={tour}
-      scenes={scenes}
-      groups={groups}
-      floorPlans={floorPlans}
-      hotspots={hotspots}
-      hotspotImages={hotspotImages}
-      trackViews
-      showShare
-    />
+    <Suspense
+      fallback={
+        <div className="h-dvh w-full bg-black" aria-hidden="true" />
+      }
+    >
+      <PublicTourClient
+        tour={tour}
+        scenes={scenes}
+        groups={groups}
+        floorPlans={floorPlans}
+        hotspots={hotspots}
+        hotspotImages={hotspotImages}
+      />
+    </Suspense>
   );
 }

@@ -24,6 +24,7 @@ export type Database = {
           description: string | null;
           slug: string;
           cover_scene_id: string | null;
+          start_scene_id: string | null;
           is_public: boolean;
           password_hash: string | null;
           default_hotspot_shape: string;
@@ -54,6 +55,7 @@ export type Database = {
           description?: string | null;
           slug: string;
           cover_scene_id?: string | null;
+          start_scene_id?: string | null;
           is_public?: boolean;
           password_hash?: string | null;
           default_hotspot_shape?: string;
@@ -84,6 +86,7 @@ export type Database = {
           description?: string | null;
           slug?: string;
           cover_scene_id?: string | null;
+          start_scene_id?: string | null;
           is_public?: boolean;
           password_hash?: string | null;
           default_hotspot_shape?: string;
@@ -118,6 +121,13 @@ export type Database = {
           {
             foreignKeyName: "fk_cover_scene";
             columns: ["cover_scene_id"];
+            isOneToOne: false;
+            referencedRelation: "scenes";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "fk_start_scene";
+            columns: ["start_scene_id"];
             isOneToOne: false;
             referencedRelation: "scenes";
             referencedColumns: ["id"];
