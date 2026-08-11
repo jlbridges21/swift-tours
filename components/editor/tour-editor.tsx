@@ -3,12 +3,15 @@
 import type { Viewer } from "@photo-sphere-viewer/core";
 import { MarkersPlugin } from "@photo-sphere-viewer/markers-plugin";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { CheckIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
   clearSceneInitialView,
   createHotspot,
+  setTourCoverAndStartScene,
   updateHotspot,
   updateSceneInitialView,
   updateTourTitle,
@@ -123,6 +126,7 @@ function TourEditorInner({
   hotspotImages: initialHotspotImages,
   userId,
 }: TourEditorProps) {
+  const router = useRouter();
   const { run, status } = useSaveStatus();
   const viewerRef = useRef<Viewer | null>(null);
 
@@ -132,6 +136,13 @@ function TourEditorInner({
   const [hotspots, setHotspots] = useState(initialHotspots);
   const [hotspotImages, setHotspotImages] = useState(initialHotspotImages);
   const [title, setTitle] = useState(tour.title);
+  /** Optimistic override after "Set as cover image / start scene". */
+  const [coverStartOverride, setCoverStartOverride] = useState<string | null>(
+    null,
+  );
+  const coverSceneId = coverStartOverride ?? tour.cover_scene_id;
+  const startSceneId =
+    coverStartOverride !== null ? coverStartOverride : tour.start_scene_id;
   const [nadir, setNadir] = useState<NadirTourFields>({
     nadir_type: tour.nadir_type,
     nadir_logo_path: tour.nadir_logo_path,
@@ -233,9 +244,17 @@ function TourEditorInner({
     }
     if (!activeSceneId || !scenes.some((scene) => scene.id === activeSceneId)) {
       const ordered = sortScenesByGroupOrder(scenes, groups);
-      setActiveSceneId(resolveOpeningSceneId(tour, ordered) ?? scenes[0].id);
+      setActiveSceneId(
+        resolveOpeningSceneId(
+          {
+            cover_scene_id: coverSceneId,
+            start_scene_id: startSceneId,
+          },
+          ordered,
+        ) ?? scenes[0].id,
+      );
     }
-  }, [scenes, groups, tour, activeSceneId]);
+  }, [scenes, groups, coverSceneId, startSceneId, activeSceneId]);
 
   useEffect(() => {
     setSelectedHotspotId(null);
@@ -291,8 +310,15 @@ function TourEditorInner({
   );
 
   const editorStartSceneId = useMemo(
-    () => resolveOpeningSceneId(tour, orderedScenes),
-    [tour, orderedScenes],
+    () =>
+      resolveOpeningSceneId(
+        {
+          cover_scene_id: coverSceneId,
+          start_scene_id: startSceneId,
+        },
+        orderedScenes,
+      ),
+    [coverSceneId, startSceneId, orderedScenes],
   );
 
   const embedScenes = useMemo(
@@ -380,6 +406,25 @@ function TourEditorInner({
       ),
     );
     toast.success("Initial view removed");
+  }
+
+  async function setAsCoverAndStart() {
+    if (!activeSceneId || !activeScene) return;
+
+    const previousOverride = coverStartOverride;
+    setCoverStartOverride(activeSceneId);
+
+    const ok = await run(() =>
+      setTourCoverAndStartScene(tour.id, activeSceneId),
+    );
+    if (!ok) {
+      setCoverStartOverride(previousOverride);
+      toast.error("Could not set cover and start scene");
+      return;
+    }
+
+    toast.success("Cover and start scene updated");
+    router.refresh();
   }
 
   function faceHotspot(hotspot: Hotspot) {
@@ -803,17 +848,54 @@ function TourEditorInner({
               />
             </div>
 
-            <div className="flex shrink-0 items-center gap-3 border-t px-3 py-2">
-              <p className="min-w-0 flex-1 truncate text-sm">
+            <div className="flex shrink-0 items-center gap-2 border-t px-3 py-2 sm:gap-3">
+              <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+                <p className="min-w-0 flex-1 truncate text-sm">
+                  {activeScene ? (
+                    <>
+                      <span className="text-muted-foreground">
+                        Active scene:{" "}
+                      </span>
+                      <span className="font-medium">{activeScene.name}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      No scene selected
+                    </span>
+                  )}
+                </p>
                 {activeScene ? (
-                  <>
-                    <span className="text-muted-foreground">Active scene: </span>
-                    <span className="font-medium">{activeScene.name}</span>
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">No scene selected</span>
-                )}
-              </p>
+                  activeSceneId === coverSceneId &&
+                  (startSceneId === null ||
+                    activeSceneId === startSceneId) ? (
+                    <span
+                      className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground"
+                      title="This scene is the cover image and start scene"
+                    >
+                      <CheckIcon className="size-3.5 shrink-0" aria-hidden />
+                      <span className="whitespace-nowrap">
+                        Cover &amp; start scene
+                      </span>
+                    </span>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="min-h-11 shrink-0 whitespace-nowrap px-2 text-xs"
+                      disabled={status === "saving"}
+                      title="Use this scene as the dashboard cover and where visitors begin"
+                      onClick={() => {
+                        void setAsCoverAndStart();
+                      }}
+                    >
+                      {status === "saving"
+                        ? "Saving…"
+                        : "Set as cover image / start scene"}
+                    </Button>
+                  )
+                ) : null}
+              </div>
               {activeScene ? (
                 <span
                   className={cn(
@@ -837,6 +919,7 @@ function TourEditorInner({
                 type="button"
                 variant="outline"
                 size="sm"
+                className="min-h-11 shrink-0"
                 disabled={!activeScene || status === "saving"}
                 title="Save the current camera angle as where visitors look when they land on this scene"
                 onClick={() => {
@@ -849,6 +932,7 @@ function TourEditorInner({
                 type="button"
                 variant="ghost"
                 size="sm"
+                className="min-h-11 shrink-0"
                 disabled={
                   !activeScene ||
                   !activeScene.has_initial_view ||

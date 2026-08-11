@@ -52,7 +52,12 @@ export function TourSettingsDialog({
   const [description, setDescription] = useState(tour.description ?? "");
   const [isPublic, setIsPublic] = useState(tour.is_public);
   const [coverSceneId, setCoverSceneId] = useState(tour.cover_scene_id ?? "");
-  const [startSceneId, setStartSceneId] = useState(tour.start_scene_id ?? "");
+  // "Same as cover" when start is null or equals cover.
+  const [startSceneId, setStartSceneId] = useState(() =>
+    tour.start_scene_id && tour.start_scene_id !== tour.cover_scene_id
+      ? tour.start_scene_id
+      : "",
+  );
   const [scenes, setScenes] = useState<SceneOption[]>([]);
   const [defaultShape, setDefaultShape] = useState<HotspotShape>(
     isHotspotShape(tour.default_hotspot_shape)
@@ -70,7 +75,11 @@ export function TourSettingsDialog({
       setDescription(tour.description ?? "");
       setIsPublic(tour.is_public);
       setCoverSceneId(tour.cover_scene_id ?? "");
-      setStartSceneId(tour.start_scene_id ?? "");
+      setStartSceneId(
+        tour.start_scene_id && tour.start_scene_id !== tour.cover_scene_id
+          ? tour.start_scene_id
+          : "",
+      );
       setDefaultShape(
         isHotspotShape(tour.default_hotspot_shape)
           ? tour.default_hotspot_shape

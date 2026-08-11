@@ -795,6 +795,52 @@ export async function updateTourTitle(
   return {};
 }
 
+/**
+ * Set the given scene as both the cover thumbnail and the default opening scene
+ * in a single write.
+ */
+export async function setTourCoverAndStartScene(
+  tourId: string,
+  sceneId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.user || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { data: scene, error: sceneError } = await owned.supabase
+    .from("scenes")
+    .select("id")
+    .eq("id", sceneId)
+    .eq("tour_id", tourId)
+    .maybeSingle();
+
+  if (sceneError) {
+    return { error: sceneError.message };
+  }
+  if (!scene) {
+    return { error: "That scene is not part of this tour." };
+  }
+
+  const { error } = await owned.supabase
+    .from("tours")
+    .update({
+      cover_scene_id: sceneId,
+      start_scene_id: sceneId,
+    })
+    .eq("id", tourId);
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  if (owned.tour.slug) {
+    revalidatePath(`/embed/${owned.tour.slug}`);
+  }
+  return {};
+}
+
 async function requireOwnedScene(sceneId: string) {
   const supabase = await createClient();
   const {
