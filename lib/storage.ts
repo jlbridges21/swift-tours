@@ -107,6 +107,24 @@ export function stagingWorkMaskPath(
   return `${stagingWorkDir(userId, tourId, jobId)}/mask.png`;
 }
 
+/** Debug intermediates for a staging job (only written when STAGING_DEBUG=true). */
+export function stagingDebugDir(
+  userId: string,
+  tourId: string,
+  jobId: string,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/debug`;
+}
+
+export function stagingDebugPath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+  filename: string,
+): string {
+  return `${stagingDebugDir(userId, tourId, jobId)}/${filename}`;
+}
+
 /** Debug / round-trip verification output (not used by the viewer). */
 export function stagingRoundtripPath(
   userId: string,

@@ -157,9 +157,10 @@ export function NadirAiClean({
   function handleCleanAll() {
     const count = scenes.length;
     if (count === 0) return;
-    const estCents = count * 5; // ~$0.05 per 1024² fill
+    // fal rounds UP to whole MP: 1024² = 1.05MP → 2MP → $0.10/scene.
+    const estCents = count * 10;
     const ok = window.confirm(
-      `Clean all ${count} scenes in this tour?\n\nEstimated cost about ${formatCents(estCents)} (billed per megapixel by fal). Each scene can take up to a minute.`,
+      `Clean all ${count} scenes in this tour?\n\nEstimated cost about ${formatCents(estCents)} (fal bills $0.05/MP rounded up; 1024² fill = $0.10). Each scene can take up to a minute.`,
     );
     if (!ok) return;
 

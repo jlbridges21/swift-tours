@@ -4,10 +4,18 @@ import sharp from "sharp";
 
 import { decodeImageToRgba, encodeRgbaToJpeg } from "@/lib/staging/image-codec";
 import {
-  compositeChangedPixels,
+  buildNadirFillPrompt,
+  deriveFloorMaterialFromAnnulus,
+  type FloorMaterialHint,
+} from "@/lib/staging/floor-material";
+import {
+  assertOutsideMaskUnchanged,
+  compositeWithBlendAlpha,
+  coverageMaskToRgba,
   makeCenteredCircleMask,
   nadirCrop,
   nadirCropToEquirect,
+  nadirMaskToEquirect,
   roundTripNoEdit,
   type DiffStats,
   type RgbaImage,
@@ -16,12 +24,14 @@ import {
   getStagingProvider,
   isStagingEnabled,
 } from "@/lib/staging/providers";
+import { estimateFluxFillCostCents } from "@/lib/staging/providers/fal-flux-fill";
 import { resolveStagingInputPath } from "@/lib/staging/variant-paths";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   cleanedCompatPath,
   cleanedPath,
   publicUrl,
+  stagingDebugPath,
   stagingWorkCropPath,
   stagingWorkMaskPath,
   stagingRoundtripPath,
@@ -36,13 +46,27 @@ export const NADIR_FILL_FOV_DEGREES = 120;
 export const NADIR_FILL_CROP_SIZE = 1024;
 /** Circle radius as fraction of half-width (inner ~45%). */
 export const NADIR_FILL_MASK_RADIUS_RATIO = 0.45;
+/** Soft edge width (px) on the circular fill mask — generous to hide seams. */
+export const NADIR_FILL_MASK_FEATHER_PX = 64;
 
-const NADIR_FILL_PROMPT =
-  "Continue the existing floor surface seamlessly through the center. Match the exact floor material, color, texture, grout lines or plank direction, and lighting. Fill only the masked tripod region. Add no objects, no furniture, no people, no shadows, no logos, and no text.";
+/**
+ * Legacy prompt (pre-fix). Contained “tripod” and was folded with
+ * “Avoid: … tripod, camera …” — Fill treats those as desired content.
+ * Kept only for incident reports / comparisons.
+ */
+export const NADIR_FILL_PROMPT_LEGACY =
+  "Continue the existing floor surface seamlessly through the center. Match the exact floor material, color, texture, grout lines or plank direction, and lighting. Fill only the masked tripod region. Add no objects, no furniture, no people, no shadows, no logos, and no text. Avoid: furniture, objects, people, text, watermark, tripod, camera, shadow, logo, reflections of equipment.";
 
-const NADIR_FILL_NEGATIVE =
-  "furniture, objects, people, text, watermark, tripod, camera, shadow, logo, reflections of equipment";
+export function isStagingDebugEnabled(): boolean {
+  return process.env.STAGING_DEBUG === "true";
+}
 
+/** Per-job cost for a default-size crop (honest fal rounding). */
+export function nadirFillEstimatedCostCents(
+  cropSize = NADIR_FILL_CROP_SIZE,
+): number {
+  return estimateFluxFillCostCents(cropSize, cropSize);
+}
 export type RoundTripJobResult = {
   resultPath: string;
   replaceStats: DiffStats;
@@ -279,13 +303,46 @@ async function cleanupStagingWork(
   ownerId: string,
   tourId: string,
   jobId: string,
+  options?: { keepDebug?: boolean },
 ): Promise<void> {
   const admin = createAdminClient();
   const paths = [
     stagingWorkCropPath(ownerId, tourId, jobId),
     stagingWorkMaskPath(ownerId, tourId, jobId),
   ];
+  if (!options?.keepDebug) {
+    const debugNames = [
+      "01-source-crop.jpg",
+      "02-mask.png",
+      "03-model-output.jpg",
+      "04-reprojected.png",
+      "05-composite-alpha.png",
+      "06-result.jpg",
+    ];
+    for (const name of debugNames) {
+      paths.push(stagingDebugPath(ownerId, tourId, jobId, name));
+    }
+  }
   await admin.storage.from("panoramas").remove(paths);
+}
+
+async function uploadDebugArtifact(
+  ownerId: string,
+  tourId: string,
+  jobId: string,
+  filename: string,
+  body: Buffer,
+  contentType: string,
+): Promise<string> {
+  const admin = createAdminClient();
+  const path = stagingDebugPath(ownerId, tourId, jobId, filename);
+  const { error } = await admin.storage.from("panoramas").upload(path, body, {
+    contentType,
+    cacheControl: "60",
+    upsert: true,
+  });
+  if (error) throw new Error(`Debug upload ${filename}: ${error.message}`);
+  return publicUrl(path);
 }
 
 async function failJob(
@@ -295,7 +352,10 @@ async function failJob(
 ): Promise<{ status: "failed"; error: string }> {
   const admin = createAdminClient();
   if (cleanup) {
-    await cleanupStagingWork(cleanup.ownerId, cleanup.tourId, jobId);
+    // Keep debug artifacts when diagnosing; always remove working crop/mask.
+    await cleanupStagingWork(cleanup.ownerId, cleanup.tourId, jobId, {
+      keepDebug: isStagingDebugEnabled(),
+    });
   }
   await admin
     .from("staging_jobs")
@@ -326,6 +386,7 @@ async function processNadirFillJob(job: {
   }
 
   const admin = createAdminClient();
+  const debug = isStagingDebugEnabled();
   const { data: scene, error: sceneError } = await admin
     .from("scenes")
     .select(
@@ -364,6 +425,10 @@ async function processNadirFillJob(job: {
     typeof job.params.maskRadiusRatio === "number"
       ? job.params.maskRadiusRatio
       : NADIR_FILL_MASK_RADIUS_RATIO;
+  const maskFeatherPx =
+    typeof job.params.maskFeatherPx === "number"
+      ? job.params.maskFeatherPx
+      : NADIR_FILL_MASK_FEATHER_PX;
 
   let provider;
   try {
@@ -393,8 +458,25 @@ async function processNadirFillJob(job: {
       const rgba = await decodeImageToRgba(
         Buffer.from(await file.arrayBuffer()),
       );
+      // Extract + reproject pair: nadirCrop ↔ nadirCropToEquirect (stereographic).
       const crop = nadirCrop(rgba, { fovDegrees, size: cropSize });
-      const mask = makeCenteredCircleMask(cropSize, maskRadiusRatio, 12);
+      const mask = makeCenteredCircleMask(
+        cropSize,
+        maskRadiusRatio,
+        maskFeatherPx,
+      );
+
+      const materialParam = job.params.floorMaterial;
+      const material: FloorMaterialHint =
+        materialParam === "hardwood" ||
+        materialParam === "tile" ||
+        materialParam === "carpet" ||
+        materialParam === "concrete" ||
+        materialParam === "laminate" ||
+        materialParam === "generic"
+          ? materialParam
+          : deriveFloorMaterialFromAnnulus(crop, mask);
+      const prompt = buildNadirFillPrompt(material);
 
       const cropJpeg = await encodeRgbaToJpeg(crop, 92);
       const maskPng = await encodeRgbaToPng(mask);
@@ -420,13 +502,35 @@ async function processNadirFillJob(job: {
         });
       if (maskUpErr) return failJob(job.id, maskUpErr.message, cleanup);
 
+      const imageUrl = publicUrl(cropPath);
+      const maskUrl = publicUrl(maskPath);
+
+      let debugUrls: Record<string, string> = {};
+      if (debug) {
+        debugUrls["01-source-crop.jpg"] = await uploadDebugArtifact(
+          ownerId,
+          job.tour_id,
+          job.id,
+          "01-source-crop.jpg",
+          cropJpeg,
+          "image/jpeg",
+        );
+        debugUrls["02-mask.png"] = await uploadDebugArtifact(
+          ownerId,
+          job.tour_id,
+          job.id,
+          "02-mask.png",
+          maskPng,
+          "image/png",
+        );
+      }
+
       const submitted = await provider.submitInpaint({
         image: cropJpeg,
         mask: maskPng,
-        imageUrl: publicUrl(cropPath),
-        maskUrl: publicUrl(maskPath),
-        prompt: NADIR_FILL_PROMPT,
-        negativePrompt: NADIR_FILL_NEGATIVE,
+        imageUrl,
+        maskUrl,
+        prompt,
       });
 
       const { error: updateError } = await admin
@@ -440,9 +544,16 @@ async function processNadirFillJob(job: {
             fovDegrees,
             cropSize,
             maskRadiusRatio,
+            maskFeatherPx,
             sourcePath,
             cropPath,
             maskPath,
+            floorMaterial: material,
+            prompt,
+            imageUrl,
+            maskUrl,
+            debug,
+            ...(debug ? { debugUrls } : {}),
           } as Json,
         })
         .eq("id", job.id);
@@ -518,22 +629,75 @@ async function processNadirFillJob(job: {
               .toBuffer(),
           );
 
-    const { image: patch, mask } = nadirCropToEquirect(cropForReproject, {
+    // Same stereographic pair as extract: nadirCrop ↔ nadirCropToEquirect.
+    const reprojectParams = {
       fovDegrees,
       size: cropSize,
       targetWidth: original.width,
       targetHeight: original.height,
-    });
+    };
+    const { image: patch } = nadirCropToEquirect(
+      cropForReproject,
+      reprojectParams,
+    );
 
-    const composited = compositeChangedPixels(original, patch, mask, {
-      threshold: 3,
-      softRange: 6,
-      featherPx: 4,
-    });
+    // Rebuild the circular mask (params stored on job) and reproject it —
+    // final blend alpha = feathered circular mask ∧ FOV coverage.
+    const circleMask = makeCenteredCircleMask(
+      cropSize,
+      maskRadiusRatio,
+      maskFeatherPx,
+    );
+    const blendAlpha = nadirMaskToEquirect(circleMask, reprojectParams);
+
+    const composited = compositeWithBlendAlpha(original, patch, blendAlpha);
+    assertOutsideMaskUnchanged(original, composited, blendAlpha);
 
     const cleanedJpeg = await encodeRgbaToJpeg(composited, 92);
     const outPath = cleanedPath(ownerId, job.tour_id, scene.id);
     const compatOutPath = cleanedCompatPath(ownerId, job.tour_id, scene.id);
+
+    let debugUrls =
+      (job.params.debugUrls as Record<string, string> | undefined) ?? {};
+    if (debug) {
+      const reprojectedPng = await encodeRgbaToPng(patch);
+      const alphaPng = await encodeRgbaToPng(coverageMaskToRgba(blendAlpha));
+      debugUrls = {
+        ...debugUrls,
+        "03-model-output.jpg": await uploadDebugArtifact(
+          ownerId,
+          job.tour_id,
+          job.id,
+          "03-model-output.jpg",
+          poll.image,
+          "image/jpeg",
+        ),
+        "04-reprojected.png": await uploadDebugArtifact(
+          ownerId,
+          job.tour_id,
+          job.id,
+          "04-reprojected.png",
+          reprojectedPng,
+          "image/png",
+        ),
+        "05-composite-alpha.png": await uploadDebugArtifact(
+          ownerId,
+          job.tour_id,
+          job.id,
+          "05-composite-alpha.png",
+          alphaPng,
+          "image/png",
+        ),
+        "06-result.jpg": await uploadDebugArtifact(
+          ownerId,
+          job.tour_id,
+          job.id,
+          "06-result.jpg",
+          cleanedJpeg,
+          "image/jpeg",
+        ),
+      };
+    }
 
     // Upload cleaned first; only then flip scene flags (no partial success).
     const { error: cleanedUpErr } = await admin.storage
@@ -587,13 +751,20 @@ async function processNadirFillJob(job: {
         result_path: outPath,
         cost_cents: costCents,
         error: null,
+        params: {
+          ...job.params,
+          ...(debug ? { debugUrls } : {}),
+          costNote: `fal Fill bills ceil(MP)×$0.05; ${cropSize}² → ${estimateFluxFillCostCents(cropSize, cropSize)}¢`,
+        } as Json,
       })
       .eq("id", job.id);
 
     if (jobUpErr) {
       // Cleaned assets are already live; surface the bookkeeping error without
       // deleting the good variant.
-      await cleanupStagingWork(ownerId, job.tour_id, job.id);
+      await cleanupStagingWork(ownerId, job.tour_id, job.id, {
+        keepDebug: debug,
+      });
       return {
         status: "succeeded",
         result: {
@@ -608,7 +779,8 @@ async function processNadirFillJob(job: {
       };
     }
 
-    await cleanupStagingWork(ownerId, job.tour_id, job.id);
+    // Normal mode: delete working + any stray debug. Debug mode: keep debug/.
+    await cleanupStagingWork(ownerId, job.tour_id, job.id, { keepDebug: debug });
 
     return {
       status: "succeeded",

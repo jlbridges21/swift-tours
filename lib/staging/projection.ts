@@ -555,6 +555,135 @@ function boxBlurFloat(
 }
 
 /**
+ * Blend a reprojected patch using an explicit alpha mask (0..1).
+ * Pixels with alpha ≈ 0 are copied byte-for-byte from `original`.
+ */
+export function compositeWithBlendAlpha(
+  original: RgbaImage,
+  patch: RgbaImage,
+  blendAlpha: CoverageMask,
+): RgbaImage {
+  if (
+    original.width !== patch.width ||
+    original.height !== patch.height ||
+    original.width !== blendAlpha.width ||
+    original.height !== blendAlpha.height
+  ) {
+    throw new Error("compositeWithBlendAlpha: dimension mismatch.");
+  }
+
+  const { width, height } = original;
+  const out = new Uint8ClampedArray(original.data);
+
+  for (let i = 0; i < width * height; i++) {
+    const a = clamp(blendAlpha.data[i], 0, 1);
+    if (a < 1e-4) continue;
+    const o = i * 4;
+    if (a >= 1 - 1e-4) {
+      out[o] = patch.data[o];
+      out[o + 1] = patch.data[o + 1];
+      out[o + 2] = patch.data[o + 2];
+      out[o + 3] = 255;
+      continue;
+    }
+    out[o] = original.data[o] * (1 - a) + patch.data[o] * a;
+    out[o + 1] = original.data[o + 1] * (1 - a) + patch.data[o + 1] * a;
+    out[o + 2] = original.data[o + 2] * (1 - a) + patch.data[o + 2] * a;
+    out[o + 3] = 255;
+  }
+
+  return { data: out, width, height };
+}
+
+/**
+ * Pointwise product of two coverage masks (same dimensions).
+ */
+export function multiplyCoverageMasks(
+  a: CoverageMask,
+  b: CoverageMask,
+): CoverageMask {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error("multiplyCoverageMasks: dimension mismatch.");
+  }
+  const data = new Float32Array(a.data.length);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = a.data[i] * b.data[i];
+  }
+  return { data, width: a.width, height: a.height };
+}
+
+/**
+ * Reproject a crop-space grayscale mask (R channel) through the same
+ * stereographic mapping as {@link nadirCropToEquirect}, returning coverage in
+ * [0,1] = sample × FOV coverage.
+ */
+export function nadirMaskToEquirect(
+  cropMask: RgbaImage,
+  params: NadirCropParams & { targetWidth: number; targetHeight: number },
+): CoverageMask {
+  const { image, mask: fovCoverage } = nadirCropToEquirect(cropMask, params);
+  const data = new Float32Array(fovCoverage.data.length);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (image.data[i * 4] / 255) * fovCoverage.data[i];
+  }
+  return { data, width: fovCoverage.width, height: fovCoverage.height };
+}
+
+/**
+ * Fail if any pixel outside the blend region differs from the source.
+ * Catches rectangular paste / wrong projection / missing mask AND.
+ */
+export function assertOutsideMaskUnchanged(
+  original: RgbaImage,
+  composited: RgbaImage,
+  blendAlpha: CoverageMask,
+  epsilon = 1e-4,
+): void {
+  if (
+    original.width !== composited.width ||
+    original.height !== composited.height ||
+    original.width !== blendAlpha.width
+  ) {
+    throw new Error("assertOutsideMaskUnchanged: dimension mismatch.");
+  }
+  const { width, height } = original;
+  for (let i = 0; i < width * height; i++) {
+    if (blendAlpha.data[i] >= epsilon) continue;
+    const o = i * 4;
+    if (
+      original.data[o] !== composited.data[o] ||
+      original.data[o + 1] !== composited.data[o + 1] ||
+      original.data[o + 2] !== composited.data[o + 2] ||
+      original.data[o + 3] !== composited.data[o + 3]
+    ) {
+      const x = i % width;
+      const y = Math.floor(i / width);
+      throw new Error(
+        `Outside-mask pixel changed at (${x},${y}): source RGBA ` +
+          `${original.data[o]},${original.data[o + 1]},${original.data[o + 2]},${original.data[o + 3]} ` +
+          `vs composite ${composited.data[o]},${composited.data[o + 1]},${composited.data[o + 2]},${composited.data[o + 3]}.`,
+      );
+    }
+  }
+}
+
+/**
+ * Encode a coverage mask as an 8-bit grayscale PNG-ready RGBA image.
+ */
+export function coverageMaskToRgba(mask: CoverageMask): RgbaImage {
+  const data = new Uint8ClampedArray(mask.width * mask.height * 4);
+  for (let i = 0; i < mask.data.length; i++) {
+    const v = Math.round(clamp(mask.data[i], 0, 1) * 255);
+    const o = i * 4;
+    data[o] = v;
+    data[o + 1] = v;
+    data[o + 2] = v;
+    data[o + 3] = 255;
+  }
+  return { data, width: mask.width, height: mask.height };
+}
+
+/**
  * Composite ONLY pixels that actually changed within the covered region onto
  * a working base image. Architecture outside the edit keeps native resolution.
  *
