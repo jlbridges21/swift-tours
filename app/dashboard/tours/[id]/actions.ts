@@ -989,6 +989,17 @@ export async function createHotspot(
     if (input.targetSceneId === sceneId) {
       return { error: "A link cannot target its own scene." };
     }
+    const { data: target, error: targetError } = await owned.supabase
+      .from("scenes")
+      .select("id, tour_id")
+      .eq("id", input.targetSceneId)
+      .maybeSingle();
+    if (targetError) {
+      return { error: targetError.message };
+    }
+    if (!target || target.tour_id !== owned.scene.tour_id) {
+      return { error: "Target scene must belong to this tour." };
+    }
   }
 
   if (input.type === "video") {
@@ -1113,6 +1124,23 @@ export async function updateHotspot(
   if (patch.video_start !== undefined && patch.video_start !== null) {
     if (!Number.isFinite(patch.video_start) || patch.video_start < 0) {
       return { error: "Start time must be zero or greater." };
+    }
+  }
+
+  if (patch.targetSceneId) {
+    if (patch.targetSceneId === owned.hotspot.scene_id) {
+      return { error: "A link cannot target its own scene." };
+    }
+    const { data: target, error: targetError } = await owned.supabase
+      .from("scenes")
+      .select("id, tour_id")
+      .eq("id", patch.targetSceneId)
+      .maybeSingle();
+    if (targetError) {
+      return { error: targetError.message };
+    }
+    if (!target || target.tour_id !== owned.scene.tour_id) {
+      return { error: "Target scene must belong to this tour." };
     }
   }
 

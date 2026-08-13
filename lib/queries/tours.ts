@@ -33,6 +33,12 @@ type TourQueryRow = Tour & {
 
 export async function listTours(): Promise<TourListItem[]> {
   const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
+    return [];
+  }
 
   const { data, error } = await supabase
     .from("tours")
@@ -50,6 +56,7 @@ export async function listTours(): Promise<TourListItem[]> {
       tour_views(count)
     `,
     )
+    .eq("owner_id", user.id)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -75,11 +82,18 @@ export async function listTours(): Promise<TourListItem[]> {
 
 export async function getTourById(id: string): Promise<Tour | null> {
   const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
 
+  // Owner-only — public tours are visible via RLS to anyone, but the editor
+  // must not open another user's tour just because is_public is true.
   const { data, error } = await supabase
     .from("tours")
     .select("*")
     .eq("id", id)
+    .eq("owner_id", user.id)
     .maybeSingle();
 
   if (error) {

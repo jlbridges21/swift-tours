@@ -1,11 +1,11 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 
-import { requireUser } from "@/lib/staging/auth";
+import { requireUser, stagingError } from "@/lib/staging/auth";
+import { isStagingEnabled } from "@/lib/staging/providers";
 import { processStagingJob } from "@/lib/staging/process-job";
 
 export const runtime = "nodejs";
-/** Prep + one fal poll + composite; fal itself is not awaited to completion. */
 export const maxDuration = 300;
 
 type RouteContext = {
@@ -14,15 +14,25 @@ type RouteContext = {
 
 /**
  * POST /api/staging/jobs/[id]/process
- * Owner-triggered worker tick:
- *   - nadir_fill: submit to fal queue OR poll once and composite when ready
- * Never blocks the function waiting on the model end-to-end.
+ * Owner-triggered worker tick — never blocks waiting on fal end-to-end.
  */
 export async function POST(_request: Request, context: RouteContext) {
+  if (!isStagingEnabled()) {
+    return stagingError(
+      503,
+      "STAGING_DISABLED",
+      "Staging is not enabled on this deployment (STAGING_ENABLED must be \"true\").",
+    );
+  }
+
   const { id } = await context.params;
+  if (!id) {
+    return stagingError(400, "BAD_REQUEST", "Missing job id.");
+  }
+
   const auth = await requireUser();
   if (!auth.user) {
-    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+    return stagingError(401, "UNAUTHORIZED", "Unauthorized.");
   }
 
   const { data: job, error } = await auth.supabase
@@ -32,24 +42,43 @@ export async function POST(_request: Request, context: RouteContext) {
     .maybeSingle();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return stagingError(500, "INTERNAL", error.message);
   }
   if (!job) {
-    return NextResponse.json({ error: "Job not found." }, { status: 404 });
+    return stagingError(404, "NOT_FOUND", "Job not found.");
   }
 
-  const { data: tour } = await auth.supabase
+  const { data: tour, error: tourError } = await auth.supabase
     .from("tours")
-    .select("id, slug")
+    .select("id, slug, owner_id")
     .eq("id", job.tour_id)
-    .eq("owner_id", auth.user.id)
     .maybeSingle();
 
+  if (tourError) {
+    return stagingError(500, "INTERNAL", tourError.message);
+  }
   if (!tour) {
-    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+    return stagingError(404, "NOT_FOUND", "Tour not found.");
+  }
+  if (tour.owner_id !== auth.user.id) {
+    return stagingError(403, "FORBIDDEN", "You do not own this tour.");
   }
 
-  const result = await processStagingJob(id);
+  let result;
+  try {
+    result = await processStagingJob(id);
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Staging process failed.";
+    if (
+      message.includes("FAL_KEY") ||
+      message.includes("STAGING_PROVIDER") ||
+      message.includes("Provider")
+    ) {
+      return stagingError(503, "PROVIDER_MISCONFIGURED", message);
+    }
+    return stagingError(500, "INTERNAL", message);
+  }
 
   if (result.status === "succeeded" && tour.slug) {
     revalidatePath(`/tour/${tour.slug}`);
@@ -57,9 +86,11 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   if (result.status === "failed") {
-    return NextResponse.json(
-      { status: result.status, error: result.error },
-      { status: 422 },
+    return stagingError(
+      422,
+      "JOB_FAILED",
+      result.error ?? "Staging job failed.",
+      { status: result.status },
     );
   }
 

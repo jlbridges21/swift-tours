@@ -112,6 +112,16 @@ export async function updateTour(
     return { error: "You must be signed in to update a tour." };
   }
 
+  const { data: existing } = await supabase
+    .from("tours")
+    .select("id, owner_id, slug")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!existing || existing.owner_id !== user.id) {
+    return { error: "Tour not found." };
+  }
+
   const title = input.title.trim();
   if (!title) {
     return { error: "Title is required." };
@@ -213,11 +223,15 @@ export async function updateTour(
         : {}),
     })
     .eq("id", id)
+    .eq("owner_id", user.id)
     .select("slug")
     .maybeSingle();
 
   if (error) {
     return { error: error.message };
+  }
+  if (!tour) {
+    return { error: "Tour not found." };
   }
 
   revalidatePath("/dashboard");
@@ -348,6 +362,16 @@ export async function updateTourNadir(
     return { error: "You must be signed in to update a tour." };
   }
 
+  const { data: existing } = await supabase
+    .from("tours")
+    .select("id, owner_id, slug")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!existing || existing.owner_id !== user.id) {
+    return { error: "Tour not found." };
+  }
+
   const patch: {
     nadir_type?: string;
     nadir_logo_path?: string | null;
@@ -403,11 +427,15 @@ export async function updateTourNadir(
     .from("tours")
     .update(patch)
     .eq("id", id)
+    .eq("owner_id", user.id)
     .select("slug")
     .maybeSingle();
 
   if (error) {
     return { error: error.message };
+  }
+  if (!tour) {
+    return { error: "Tour not found." };
   }
 
   revalidatePath("/dashboard");
@@ -494,9 +522,13 @@ export async function deleteTour(id: string): Promise<ActionResult> {
 
   const { data: existing } = await supabase
     .from("tours")
-    .select("slug")
+    .select("slug, owner_id")
     .eq("id", id)
     .maybeSingle();
+
+  if (!existing || existing.owner_id !== user.id) {
+    return { error: "Tour not found." };
+  }
 
   // Collect storage paths before the row (and cascade) disappears.
   const { data: scenes, error: scenesError } = await supabase
@@ -568,7 +600,11 @@ export async function deleteTour(id: string): Promise<ActionResult> {
     }
   }
 
-  const { error } = await supabase.from("tours").delete().eq("id", id);
+  const { error } = await supabase
+    .from("tours")
+    .delete()
+    .eq("id", id)
+    .eq("owner_id", user.id);
 
   if (error) {
     return { error: error.message };
@@ -603,6 +639,10 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
   }
 
   if (!original) {
+    return { error: "Tour not found." };
+  }
+
+  if (original.owner_id !== user.id) {
     return { error: "Tour not found." };
   }
 

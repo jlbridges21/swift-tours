@@ -7,6 +7,8 @@ type RouteContext = {
 };
 
 const MAX_REFERRER_LEN = 512;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function sanitizeReferrer(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -17,6 +19,9 @@ function sanitizeReferrer(value: unknown): string | null {
 
 export async function POST(request: Request, context: RouteContext) {
   const { id } = await context.params;
+  if (!UUID_RE.test(id)) {
+    return new NextResponse(null, { status: 204 });
+  }
 
   let referrer: string | null = null;
   try {
@@ -28,6 +33,17 @@ export async function POST(request: Request, context: RouteContext) {
 
   try {
     const supabase = createPublicClient();
+    // Same gate as /api/analytics — only count views for published tours.
+    const { data: tour } = await supabase
+      .from("tours")
+      .select("id")
+      .eq("id", id)
+      .eq("is_public", true)
+      .maybeSingle();
+    if (!tour) {
+      return new NextResponse(null, { status: 204 });
+    }
+
     await supabase.from("tour_views").insert({
       tour_id: id,
       ...(referrer ? { referrer } : {}),

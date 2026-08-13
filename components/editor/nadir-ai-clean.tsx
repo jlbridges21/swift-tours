@@ -38,9 +38,13 @@ async function createAndKickJob(
   const createJson = (await createRes.json()) as {
     job?: { id: string };
     error?: string;
+    code?: string;
   };
   if (!createRes.ok || !createJson.job) {
-    return { error: createJson.error ?? `HTTP ${createRes.status}` };
+    const code = createJson.code ? ` [${createJson.code}]` : "";
+    return {
+      error: `${createJson.error ?? `HTTP ${createRes.status}`}${code}`,
+    };
   }
 
   // Kick the worker (submit to fal). Further polls call process again.
