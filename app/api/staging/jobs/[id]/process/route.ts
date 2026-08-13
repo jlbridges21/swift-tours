@@ -6,6 +6,7 @@ import { isStagingEnabled } from "@/lib/staging/providers";
 import { processStagingJob } from "@/lib/staging/process-job";
 
 export const runtime = "nodejs";
+/** Phase B composite can be heavy; lease prevents concurrent re-entry. */
 export const maxDuration = 300;
 
 type RouteContext = {
@@ -17,6 +18,7 @@ type RouteContext = {
  * Owner-triggered worker tick — never blocks waiting on fal end-to-end.
  */
 export async function POST(_request: Request, context: RouteContext) {
+  const started = Date.now();
   if (!isStagingEnabled()) {
     return stagingError(
       503,
@@ -70,6 +72,15 @@ export async function POST(_request: Request, context: RouteContext) {
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Staging process failed.";
+    const mem = process.memoryUsage();
+    console.error("[staging/process] thrown", {
+      jobId: id,
+      message,
+      elapsedMs: Date.now() - started,
+      rssMb: Math.round(mem.rss / 1024 / 1024),
+      heapMb: Math.round(mem.heapUsed / 1024 / 1024),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     if (
       message.includes("FAL_KEY") ||
       message.includes("STAGING_PROVIDER") ||
@@ -80,18 +91,22 @@ export async function POST(_request: Request, context: RouteContext) {
     return stagingError(500, "INTERNAL", message);
   }
 
-  if (result.status === "succeeded" && tour.slug) {
-    revalidatePath(`/tour/${tour.slug}`);
-    revalidatePath(`/embed/${tour.slug}`);
-  }
+  console.info("[staging/process] outcome", {
+    jobId: id,
+    status: result.status,
+    error: result.error ?? null,
+    elapsedMs: Date.now() - started,
+    rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+  });
 
+  // Candidate ready — do NOT revalidate public pages until Apply.
   if (result.status === "failed") {
-    return stagingError(
-      422,
-      "JOB_FAILED",
-      result.error ?? "Staging job failed.",
-      { status: result.status },
-    );
+    // Soft: return 200 with failed status so fire-and-forget clients don't
+    // treat a finished failure as a transport error.
+    return NextResponse.json({
+      status: result.status,
+      error: result.error ?? "Staging job failed.",
+    });
   }
 
   return NextResponse.json({

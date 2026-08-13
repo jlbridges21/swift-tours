@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { requireUser, stagingError } from "@/lib/staging/auth";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+/** Status poll — must stay cheap. */
+export const maxDuration = 30;
 
 type RouteContext = {
   params: Promise<{ id: string }>;

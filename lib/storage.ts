@@ -125,6 +125,25 @@ export function stagingDebugPath(
   return `${stagingDebugDir(userId, tourId, jobId)}/${filename}`;
 }
 
+/** Candidate cleaned equirect (awaiting Apply / Discard — not live yet). */
+export function stagingCandidatePath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+  index = 0,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/candidate-${index}.jpg`;
+}
+
+export function stagingCandidateCompatPath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+  index = 0,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/candidate-${index}_4k.jpg`;
+}
+
 /** Debug / round-trip verification output (not used by the viewer). */
 export function stagingRoundtripPath(
   userId: string,

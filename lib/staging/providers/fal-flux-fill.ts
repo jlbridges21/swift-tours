@@ -109,6 +109,7 @@ async function assertPublicUrlReachable(
  */
 export const falFluxFillProvider: StagingProvider = {
   name: "fal_flux_fill",
+  kind: "fill",
 
   async submitInpaint(input: InpaintInput): Promise<InpaintSubmitResult> {
     configureFal();

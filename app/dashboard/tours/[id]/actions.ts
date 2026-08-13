@@ -22,6 +22,8 @@ import {
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { clampPlanCoord } from "@/lib/floor-plans";
 import {
+  cleanedCompatPath,
+  cleanedPath,
   galleryImageObjectPaths,
   sceneObjectPaths,
 } from "@/lib/storage";
@@ -1978,6 +1980,216 @@ export async function revertSceneCleaned(
 
   revalidateTourCaches(scene.tour_id, owned.tour.slug);
   return {};
+}
+
+/**
+ * Apply a succeeded nadir_fill candidate onto the scene (enables cleaned).
+ * Does not hot-swap mid-flight incorrectly: caller should update local scene
+ * state after this returns so the viewer remounts deliberately.
+ */
+export async function applyNadirFillCandidate(
+  jobId: string,
+  candidateIndex = 0,
+): Promise<SceneActionResult & { cleanedPath?: string }> {
+  const owned = await requireOwnedTourFromJob(jobId);
+  if (owned.error || !owned.job || !owned.tour || !owned.supabase) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const job = owned.job;
+  if (job.status !== "succeeded") {
+    return { error: "Job is not ready to apply." };
+  }
+  if (!job.scene_id) return { error: "Job has no scene." };
+
+  const params = (job.params ?? {}) as Record<string, unknown>;
+  const paths = Array.isArray(params.candidatePaths)
+    ? (params.candidatePaths as string[])
+    : job.result_path
+      ? [job.result_path]
+      : [];
+  const compatPaths = Array.isArray(params.candidateCompatPaths)
+    ? (params.candidateCompatPaths as Array<string | null>)
+    : [];
+
+  const src = paths[candidateIndex];
+  if (!src) return { error: "Candidate not found." };
+
+  const { data: scene, error: sceneError } = await owned.supabase
+    .from("scenes")
+    .select("id, tour_id, cleaned_path, cleaned_compat_path")
+    .eq("id", job.scene_id)
+    .maybeSingle();
+  if (sceneError) return { error: sceneError.message };
+  if (!scene) return { error: "Scene not found." };
+
+  const dest = cleanedPath(
+    owned.tour.owner_id,
+    scene.tour_id,
+    scene.id,
+  );
+  const destCompat = cleanedCompatPath(
+    owned.tour.owner_id,
+    scene.tour_id,
+    scene.id,
+  );
+
+  // Download candidate and upload to cleaned path (copy across keys).
+  const { data: file, error: dlErr } = await owned.supabase.storage
+    .from("panoramas")
+    .download(src);
+  if (dlErr || !file) {
+    return { error: dlErr?.message ?? "Failed to download candidate." };
+  }
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const { error: upErr } = await owned.supabase.storage
+    .from("panoramas")
+    .upload(dest, bytes, {
+      contentType: "image/jpeg",
+      cacheControl: "3600",
+      upsert: true,
+    });
+  if (upErr) return { error: upErr.message };
+
+  let compat: string | null = null;
+  const compatSrc = compatPaths[candidateIndex];
+  if (compatSrc) {
+    const { data: cFile } = await owned.supabase.storage
+      .from("panoramas")
+      .download(compatSrc);
+    if (cFile) {
+      const cBytes = Buffer.from(await cFile.arrayBuffer());
+      const { error: cUp } = await owned.supabase.storage
+        .from("panoramas")
+        .upload(destCompat, cBytes, {
+          contentType: "image/jpeg",
+          cacheControl: "3600",
+          upsert: true,
+        });
+      if (!cUp) compat = destCompat;
+    }
+  }
+
+  // Remove previous cleaned objects if different.
+  const stale = [scene.cleaned_path, scene.cleaned_compat_path].filter(
+    (p): p is string => Boolean(p) && p !== dest && p !== compat,
+  );
+  if (stale.length) {
+    await owned.supabase.storage.from("panoramas").remove(stale);
+  }
+
+  const { error: sceneUp } = await owned.supabase
+    .from("scenes")
+    .update({
+      cleaned_path: dest,
+      cleaned_compat_path: compat,
+      cleaned_enabled: true,
+    })
+    .eq("id", scene.id);
+  if (sceneUp) return { error: sceneUp.message };
+
+  await owned.supabase
+    .from("staging_jobs")
+    .update({
+      params: {
+        ...params,
+        awaitingReview: false,
+        appliedCandidateIndex: candidateIndex,
+        appliedPath: dest,
+      },
+    })
+    .eq("id", jobId);
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return { cleanedPath: dest };
+}
+
+/** Discard candidates — scene stays byte-identical to before the job. */
+export async function discardNadirFillCandidate(
+  jobId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTourFromJob(jobId);
+  if (owned.error || !owned.job || !owned.tour || !owned.supabase) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const params = (owned.job.params ?? {}) as Record<string, unknown>;
+  const paths = [
+    ...(Array.isArray(params.candidatePaths)
+      ? (params.candidatePaths as string[])
+      : []),
+    ...(Array.isArray(params.candidateCompatPaths)
+      ? (params.candidateCompatPaths as Array<string | null>).filter(
+          (p): p is string => Boolean(p),
+        )
+      : []),
+    owned.job.result_path,
+  ].filter((p): p is string => Boolean(p));
+
+  if (paths.length) {
+    await owned.supabase.storage.from("panoramas").remove(paths);
+  }
+
+  const { error } = await owned.supabase
+    .from("staging_jobs")
+    .update({
+      status: "cancelled",
+      result_path: null,
+      error: null,
+      params: { ...params, awaitingReview: false, discarded: true },
+    })
+    .eq("id", jobId);
+  if (error) return { error: error.message };
+
+  revalidateTourCaches(owned.job.tour_id, owned.tour.slug);
+  return {};
+}
+
+async function requireOwnedTourFromJob(jobId: string): Promise<{
+  error?: string;
+  supabase?: Awaited<ReturnType<typeof createClient>>;
+  job?: {
+    id: string;
+    tour_id: string;
+    scene_id: string | null;
+    status: string;
+    params: Record<string, unknown> | null;
+    result_path: string | null;
+  };
+  tour?: { id: string; owner_id: string; slug: string | null };
+}> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "You must be signed in." };
+
+  const { data: job, error } = await supabase
+    .from("staging_jobs")
+    .select("id, tour_id, scene_id, status, params, result_path")
+    .eq("id", jobId)
+    .maybeSingle();
+  if (error) return { error: error.message };
+  if (!job) return { error: "Job not found." };
+
+  const { data: tour, error: tourError } = await supabase
+    .from("tours")
+    .select("id, owner_id, slug")
+    .eq("id", job.tour_id)
+    .maybeSingle();
+  if (tourError) return { error: tourError.message };
+  if (!tour || tour.owner_id !== user.id) {
+    return { error: "You do not own this tour." };
+  }
+
+  return {
+    supabase,
+    job: {
+      ...job,
+      params: (job.params ?? {}) as Record<string, unknown>,
+    },
+    tour,
+  };
 }
 
 export async function getTourStagingSpendCents(

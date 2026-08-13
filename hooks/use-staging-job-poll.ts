@@ -2,12 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { fetchWithTimeout } from "@/lib/staging/client-fetch";
+
 export type StagingJobStatus =
   | "queued"
   | "processing"
   | "succeeded"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | string;
 
 export type StagingJob = {
   id: string;
@@ -26,25 +29,18 @@ export type StagingJob = {
 };
 
 type Options = {
-  /** Stop polling when status is terminal. Default true. */
   stopOnTerminal?: boolean;
-  /** Initial delay in ms. Default 800. */
   initialDelayMs?: number;
-  /** Max delay in ms. Default 8000. */
   maxDelayMs?: number;
-  /** When true, start polling immediately. */
+  /** Stop polling after this many ms even if still processing. Default 10 min. */
+  maxPollMs?: number;
   enabled?: boolean;
 };
 
-const TERMINAL = new Set<StagingJobStatus>([
-  "succeeded",
-  "failed",
-  "cancelled",
-]);
+const TERMINAL = new Set<string>(["succeeded", "failed", "cancelled"]);
 
 /**
- * Poll GET /api/staging/jobs/[id] with exponential backoff.
- * Ready for the editor UI — does not create or process jobs itself.
+ * Poll GET /api/staging/jobs/[id] with exponential backoff and a hard deadline.
  */
 export function useStagingJobPoll(
   jobId: string | null,
@@ -52,8 +48,9 @@ export function useStagingJobPoll(
 ) {
   const {
     stopOnTerminal = true,
-    initialDelayMs = 800,
-    maxDelayMs = 8000,
+    initialDelayMs = 1000,
+    maxDelayMs = 12_000,
+    maxPollMs = 10 * 60 * 1000,
     enabled = true,
   } = options;
 
@@ -62,6 +59,7 @@ export function useStagingJobPoll(
   const [isPolling, setIsPolling] = useState(false);
   const delayRef = useRef(initialDelayMs);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startedAtRef = useRef(0);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
@@ -72,13 +70,23 @@ export function useStagingJobPoll(
 
   const fetchOnce = useCallback(async () => {
     if (!jobId) return null;
-    const res = await fetch(`/api/staging/jobs/${jobId}`, {
+    const result = await fetchWithTimeout(`/api/staging/jobs/${jobId}`, {
       method: "GET",
       credentials: "same-origin",
+      timeoutMs: 15_000,
     });
-    const json = (await res.json()) as { job?: StagingJob; error?: string };
-    if (!res.ok) {
-      throw new Error(json.error ?? `HTTP ${res.status}`);
+    if (!result.ok) {
+      if (result.timedOut) {
+        throw Object.assign(new Error(result.error), { soft: true });
+      }
+      throw new Error(result.error);
+    }
+    const json = (await result.res.json()) as {
+      job?: StagingJob;
+      error?: string;
+    };
+    if (!result.res.ok) {
+      throw new Error(json.error ?? `HTTP ${result.res.status}`);
     }
     return json.job ?? null;
   }, [jobId]);
@@ -88,6 +96,7 @@ export function useStagingJobPoll(
     delayRef.current = initialDelayMs;
     setJob(null);
     setError(null);
+    startedAtRef.current = Date.now();
 
     if (!jobId || !enabled) {
       setIsPolling(false);
@@ -98,33 +107,50 @@ export function useStagingJobPoll(
     setIsPolling(true);
 
     const tick = async () => {
+      if (Date.now() - startedAtRef.current > maxPollMs) {
+        setIsPolling(false);
+        setError(
+          "Still processing — check back in a moment. Polling paused after 10 minutes.",
+        );
+        return;
+      }
+
       try {
         const next = await fetchOnce();
         if (cancelled) return;
         setJob(next);
         setError(null);
 
-        if (
-          next &&
-          stopOnTerminal &&
-          TERMINAL.has(next.status as StagingJobStatus)
-        ) {
+        if (next && stopOnTerminal && TERMINAL.has(next.status)) {
           setIsPolling(false);
           return;
         }
 
         const delay = delayRef.current;
-        delayRef.current = Math.min(maxDelayMs, Math.round(delay * 1.6));
+        delayRef.current = Math.min(maxDelayMs, Math.round(delay * 1.5));
         timerRef.current = setTimeout(() => {
           void tick();
         }, delay);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Polling failed.");
+        const soft =
+          err instanceof Error &&
+          (err as Error & { soft?: boolean }).soft === true;
+        const message =
+          err instanceof Error ? err.message : "Polling failed.";
+        // Soft errors (timeout / Failed to fetch) are informational — keep polling.
+        setError(message);
+        if (!soft && /unauthorized|forbidden|not found/i.test(message)) {
+          setIsPolling(false);
+          return;
+        }
         timerRef.current = setTimeout(() => {
           void tick();
         }, delayRef.current);
-        delayRef.current = Math.min(maxDelayMs, Math.round(delayRef.current * 1.6));
+        delayRef.current = Math.min(
+          maxDelayMs,
+          Math.round(delayRef.current * 1.5),
+        );
       }
     };
 
@@ -141,9 +167,33 @@ export function useStagingJobPoll(
     stopOnTerminal,
     initialDelayMs,
     maxDelayMs,
+    maxPollMs,
     fetchOnce,
     clearTimer,
   ]);
 
   return { job, error, isPolling, refresh: fetchOnce };
+}
+
+export function stagingJobStatusLabel(
+  status: StagingJobStatus | null | undefined,
+  error?: string | null,
+): string {
+  switch (status) {
+    case null:
+    case undefined:
+      return "Idle";
+    case "queued":
+      return "Queued…";
+    case "processing":
+      return "Processing…";
+    case "succeeded":
+      return "Ready to review";
+    case "failed":
+      return `Failed: ${error ?? "unknown"}`;
+    case "cancelled":
+      return "Discarded";
+    default:
+      return `Status: ${status}`;
+  }
 }

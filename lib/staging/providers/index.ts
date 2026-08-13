@@ -1,14 +1,29 @@
 import "server-only";
 
 import { falFluxFillProvider } from "@/lib/staging/providers/fal-flux-fill";
+import { falKontextProvider } from "@/lib/staging/providers/fal-kontext";
+import { falVisionFillProvider } from "@/lib/staging/providers/fal-vision-fill";
+import { textureFillProvider } from "@/lib/staging/providers/texture-fill";
 import type { StagingProvider } from "@/lib/staging/providers/types";
 
+export type StagingProviderName =
+  | "fal_flux_fill"
+  | "fal_vision_fill"
+  | "fal_flux_kontext"
+  | "texture_fill";
+
 /**
- * Resolve the staging provider from STAGING_PROVIDER.
+ * Resolve the staging provider from STAGING_PROVIDER or an explicit override.
  * Server-only — never import from Client Components.
  */
-export function getStagingProvider(): StagingProvider {
-  const name = (process.env.STAGING_PROVIDER ?? "fal_flux_fill").trim();
+export function getStagingProvider(
+  override?: string | null,
+): StagingProvider {
+  const name = (
+    override?.trim() ||
+    process.env.STAGING_PROVIDER ||
+    "fal_flux_kontext"
+  ).trim() as StagingProviderName;
 
   switch (name) {
     case "fal_flux_fill": {
@@ -19,9 +34,27 @@ export function getStagingProvider(): StagingProvider {
       }
       return falFluxFillProvider;
     }
+    case "fal_vision_fill": {
+      if (!process.env.FAL_KEY?.trim()) {
+        throw new Error(
+          "STAGING_PROVIDER is fal_vision_fill but FAL_KEY is missing.",
+        );
+      }
+      return falVisionFillProvider;
+    }
+    case "fal_flux_kontext": {
+      if (!process.env.FAL_KEY?.trim()) {
+        throw new Error(
+          "STAGING_PROVIDER is fal_flux_kontext but FAL_KEY is missing.",
+        );
+      }
+      return falKontextProvider;
+    }
+    case "texture_fill":
+      return textureFillProvider;
     default:
       throw new Error(
-        `Unknown STAGING_PROVIDER “${name}”. Supported: fal_flux_fill.`,
+        `Unknown STAGING_PROVIDER “${name}”. Supported: fal_flux_kontext, fal_vision_fill, fal_flux_fill, texture_fill.`,
       );
   }
 }
@@ -34,4 +67,18 @@ export function stagingMaxJobsPerTour(): number {
   const raw = process.env.STAGING_MAX_JOBS_PER_TOUR;
   const n = raw ? Number.parseInt(raw, 10) : 50;
   return Number.isFinite(n) && n > 0 ? n : 50;
+}
+
+/** Default AI provider for new jobs when the client does not specify. */
+export function defaultAiProviderName(): StagingProviderName {
+  const env = (process.env.STAGING_PROVIDER ?? "fal_flux_kontext").trim();
+  if (
+    env === "fal_flux_fill" ||
+    env === "fal_vision_fill" ||
+    env === "fal_flux_kontext" ||
+    env === "texture_fill"
+  ) {
+    return env;
+  }
+  return "fal_flux_kontext";
 }

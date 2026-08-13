@@ -12,7 +12,8 @@ import {
 import type { Json } from "@/types/database";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+/** Create is a light DB insert — keep short. */
+export const maxDuration = 30;
 
 const KIND_RE = /^(nadir_fill|stage_room)$/;
 const UUID_RE =
