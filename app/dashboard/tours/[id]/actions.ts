@@ -214,7 +214,7 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
   const { data: scene, error: sceneError } = await supabase
     .from("scenes")
     .select(
-      "id, tour_id, storage_path, thumbnail_path, compat_path, nadir_patch_path",
+      "id, tour_id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, staged_path, staged_compat_path",
     )
     .eq("id", sceneId)
     .maybeSingle();
@@ -1901,6 +1901,78 @@ export async function assignScenesToFloorPlan(
 
   revalidateTourCaches(owned.plan.tour_id, owned.tour.slug);
   return {};
+}
+
+export async function revertSceneCleaned(
+  sceneId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedScene(sceneId);
+  if (owned.error || !owned.scene || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const supabase = owned.supabase;
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id, cleaned_path, cleaned_compat_path")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) return { error: sceneError.message };
+  if (!scene) return { error: "Scene not found." };
+
+  const paths = [scene.cleaned_path, scene.cleaned_compat_path].filter(
+    (p): p is string => Boolean(p),
+  );
+  if (paths.length > 0) {
+    const { error: storageError } = await supabase.storage
+      .from("panoramas")
+      .remove(paths);
+    if (storageError) {
+      console.error("[revertSceneCleaned] storage remove failed", {
+        sceneId,
+        paths,
+        message: storageError.message,
+      });
+    }
+  }
+
+  const { error: updateError } = await supabase
+    .from("scenes")
+    .update({
+      cleaned_path: null,
+      cleaned_compat_path: null,
+      cleaned_enabled: false,
+    })
+    .eq("id", sceneId);
+
+  if (updateError) return { error: updateError.message };
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return {};
+}
+
+export async function getTourStagingSpendCents(
+  tourId: string,
+): Promise<{ cents?: number; error?: string }> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { data, error } = await owned.supabase
+    .from("staging_jobs")
+    .select("cost_cents")
+    .eq("tour_id", tourId)
+    .eq("status", "succeeded");
+
+  if (error) return { error: error.message };
+
+  const cents = (data ?? []).reduce(
+    (sum, row) => sum + (row.cost_cents ?? 0),
+    0,
+  );
+  return { cents };
 }
 
 export async function updateScenePlanPlacement(

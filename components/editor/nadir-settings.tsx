@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 
 import { updateTourNadir } from "@/app/dashboard/actions";
+import { NadirAiClean } from "@/components/editor/nadir-ai-clean";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -47,13 +48,15 @@ type NadirSettingsProps = {
   values: NadirTourFields;
   onChange: (next: NadirTourFields) => void;
   onScenesChange: (scenes: EditorScene[]) => void;
+  stagingEnabled?: boolean;
   className?: string;
 };
 
-const TYPE_OPTIONS: { value: NadirType; label: string }[] = [
+const TYPE_OPTIONS: { value: NadirType | "ai"; label: string }[] = [
   { value: "none", label: "None" },
   { value: "blur", label: "Blur" },
   { value: "logo", label: "Logo" },
+  { value: "ai", label: "Remove tripod (AI)" },
 ];
 
 function clamp(value: number, min: number, max: number) {
@@ -68,11 +71,15 @@ export function NadirSettings({
   values,
   onChange,
   onScenesChange,
+  stagingEnabled = false,
   className,
 }: NadirSettingsProps) {
   const [pending, startTransition] = useTransition();
   const [applying, setApplying] = useState(false);
   const [regenPending, setRegenPending] = useState(false);
+  const [uiMode, setUiMode] = useState<NadirType | "ai">(
+    isNadirType(values.nadir_type) ? values.nadir_type : "none",
+  );
   const [applyProgress, setApplyProgress] = useState<{
     done: number;
     total: number;
@@ -274,7 +281,15 @@ export function NadirSettings({
     }, debounceMs);
   }
 
-  function handleTypeChange(next: NadirType) {
+  function handleTypeChange(next: NadirType | "ai") {
+    setUiMode(next);
+    if (next === "ai") {
+      // Clear overlay patch so it doesn't fight the baked AI floor.
+      updateLocal({ nadir_type: "none" });
+      persist({ nadir_type: "none" }, 0);
+      scheduleCurrentRegen("none", logoSource, values.nadir_logo_path, values.nadir_feather, 100);
+      return;
+    }
     updateLocal({ nadir_type: next });
     persist({ nadir_type: next }, 0);
     scheduleCurrentRegen(
@@ -354,6 +369,10 @@ export function NadirSettings({
     );
   }
 
+  const typeOptions = stagingEnabled
+    ? TYPE_OPTIONS
+    : TYPE_OPTIONS.filter((o) => o.value !== "ai");
+
   const previewLogoUrl = resolveNadirLogoUrl(
     logoSource,
     values.nadir_logo_path,
@@ -371,18 +390,21 @@ export function NadirSettings({
       <div className="space-y-2">
         <Label className="text-xs">Type</Label>
         <div
-          className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1"
+          className={cn(
+            "grid gap-1 rounded-lg bg-muted p-1",
+            typeOptions.length > 3 ? "grid-cols-2" : "grid-cols-3",
+          )}
           role="group"
           aria-label="Nadir patch type"
         >
-          {TYPE_OPTIONS.map((option) => (
+          {typeOptions.map((option) => (
             <button
               key={option.value}
               type="button"
               disabled={pending || applying}
               className={cn(
                 "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                type === option.value
+                uiMode === option.value
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground",
               )}
@@ -394,7 +416,16 @@ export function NadirSettings({
         </div>
       </div>
 
-      {type === "logo" ? (
+      {uiMode === "ai" && stagingEnabled ? (
+        <NadirAiClean
+          tourId={tourId}
+          scenes={scenes}
+          activeSceneId={activeSceneId}
+          onScenesChange={onScenesChange}
+        />
+      ) : null}
+
+      {uiMode !== "ai" && type === "logo" ? (
         <div className="space-y-2">
           <Label className="text-xs">Logo</Label>
           <p className="text-xs text-muted-foreground">
@@ -455,7 +486,7 @@ export function NadirSettings({
         </div>
       ) : null}
 
-      {type !== "none" ? (
+      {uiMode !== "ai" && type !== "none" ? (
         <>
           <p className="text-[11px] text-muted-foreground">
             Size, opacity, and rotation are instant. Type, logo, and feather
@@ -517,6 +548,7 @@ export function NadirSettings({
         </>
       ) : null}
 
+      {uiMode !== "ai" ? (
       <div className="space-y-2 border-t pt-3">
         <Button
           type="button"
@@ -555,6 +587,7 @@ export function NadirSettings({
           after changing type, logo, or feather.
         </p>
       </div>
+      ) : null}
     </div>
   );
 }

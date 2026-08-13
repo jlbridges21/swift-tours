@@ -501,7 +501,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   // Collect storage paths before the row (and cascade) disappears.
   const { data: scenes, error: scenesError } = await supabase
     .from("scenes")
-    .select("id, storage_path, thumbnail_path, compat_path, nadir_patch_path")
+    .select("id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, staged_path, staged_compat_path")
     .eq("tour_id", id);
 
   if (scenesError) {
@@ -785,6 +785,12 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           file_size: scene.file_size,
           nadir_patch_path: scene.nadir_patch_path,
           nadir_disabled: scene.nadir_disabled,
+          cleaned_path: scene.cleaned_path,
+          cleaned_compat_path: scene.cleaned_compat_path,
+          cleaned_enabled: scene.cleaned_enabled,
+          staged_path: scene.staged_path,
+          staged_compat_path: scene.staged_compat_path,
+          staged_enabled: scene.staged_enabled,
           adjust_brightness: scene.adjust_brightness,
           adjust_contrast: scene.adjust_contrast,
           adjust_saturation: scene.adjust_saturation,
@@ -869,6 +875,62 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           copiedStoragePaths.push(newNadirPath);
         }
 
+        let newStagedPath: string | null = null;
+        if (scene.staged_path) {
+          newStagedPath = `${user.id}/${newTourId}/${newSceneId}_staged.jpg`;
+          const { error: stagedCopyError } = await supabase.storage
+            .from("panoramas")
+            .copy(scene.staged_path, newStagedPath);
+
+          if (stagedCopyError) {
+            await rollback();
+            return { error: stagedCopyError.message };
+          }
+          copiedStoragePaths.push(newStagedPath);
+        }
+
+        let newStagedCompatPath: string | null = null;
+        if (scene.staged_compat_path) {
+          newStagedCompatPath = `${user.id}/${newTourId}/${newSceneId}_staged_4k.jpg`;
+          const { error: stagedCompatCopyError } = await supabase.storage
+            .from("panoramas")
+            .copy(scene.staged_compat_path, newStagedCompatPath);
+
+          if (stagedCompatCopyError) {
+            await rollback();
+            return { error: stagedCompatCopyError.message };
+          }
+          copiedStoragePaths.push(newStagedCompatPath);
+        }
+
+        let newCleanedPath: string | null = null;
+        if (scene.cleaned_path) {
+          newCleanedPath = `${user.id}/${newTourId}/${newSceneId}_cleaned.jpg`;
+          const { error: cleanedCopyError } = await supabase.storage
+            .from("panoramas")
+            .copy(scene.cleaned_path, newCleanedPath);
+
+          if (cleanedCopyError) {
+            await rollback();
+            return { error: cleanedCopyError.message };
+          }
+          copiedStoragePaths.push(newCleanedPath);
+        }
+
+        let newCleanedCompatPath: string | null = null;
+        if (scene.cleaned_compat_path) {
+          newCleanedCompatPath = `${user.id}/${newTourId}/${newSceneId}_cleaned_4k.jpg`;
+          const { error: cleanedCompatCopyError } = await supabase.storage
+            .from("panoramas")
+            .copy(scene.cleaned_compat_path, newCleanedCompatPath);
+
+          if (cleanedCompatCopyError) {
+            await rollback();
+            return { error: cleanedCompatCopyError.message };
+          }
+          copiedStoragePaths.push(newCleanedCompatPath);
+        }
+
         const { error: updateSceneError } = await supabase
           .from("scenes")
           .update({
@@ -876,6 +938,10 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
             thumbnail_path: newThumbnailPath,
             compat_path: newCompatPath,
             nadir_patch_path: newNadirPath,
+            staged_path: newStagedPath,
+            staged_compat_path: newStagedCompatPath,
+            cleaned_path: newCleanedPath,
+            cleaned_compat_path: newCleanedCompatPath,
           })
           .eq("id", newSceneId);
 

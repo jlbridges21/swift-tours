@@ -58,6 +58,7 @@ import {
   NADIR_MARKER_ID,
 } from "@/lib/nadir";
 import { publicUrl } from "@/lib/storage";
+import { shouldSkipNadirOverlay } from "@/lib/staging/variant-paths";
 import { cn } from "@/lib/utils";
 import {
   DEFAULT_VIEWER_EFFECTS,
@@ -96,6 +97,12 @@ export type PanoramaViewerScene = Pick<
   | "adjust_brightness"
   | "adjust_contrast"
   | "adjust_saturation"
+  | "cleaned_path"
+  | "cleaned_compat_path"
+  | "cleaned_enabled"
+  | "staged_path"
+  | "staged_compat_path"
+  | "staged_enabled"
 > & {
   /** Client-only blob: URL for instant nadir preview before upload finishes. */
   nadir_preview_url?: string | null;
@@ -361,6 +368,8 @@ function nadirMarkerForScene(
   settings: PanoramaNadirSettings | undefined,
 ): MarkerConfig | null {
   if (!settings || scene.nadir_disabled) return null;
+  // Baked AI floor already cleaned/staged — overlay disc would double up.
+  if (shouldSkipNadirOverlay(scene)) return null;
 
   const preview = scene.nadir_preview_url?.trim();
   const stored = scene.nadir_patch_path;

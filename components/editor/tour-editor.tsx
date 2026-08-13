@@ -82,6 +82,7 @@ type TourEditorProps = {
   hotspots: Hotspot[];
   hotspotImages: HotspotImage[];
   userId: string;
+  stagingEnabled?: boolean;
 };
 
 function normalizeYaw(yaw: number): number {
@@ -125,6 +126,7 @@ function TourEditorInner({
   hotspots: initialHotspots,
   hotspotImages: initialHotspotImages,
   userId,
+  stagingEnabled = false,
 }: TourEditorProps) {
   const router = useRouter();
   const { run, status } = useSaveStatus();
@@ -1051,6 +1053,7 @@ function TourEditorInner({
                   values={nadir}
                   onChange={setNadir}
                   onScenesChange={setScenes}
+                  stagingEnabled={stagingEnabled}
                 />
               ) : rightPanel === "floorplan" ? (
                 <FloorPlanEditor

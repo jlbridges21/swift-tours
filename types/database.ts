@@ -3,7 +3,7 @@
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  *
- * (Requires `supabase login` or SUPABASE_ACCESS_TOKEN.)
+ * After 0018_staging_variants.sql, regenerate so cleaned_* / provider_* stay in sync.
  */
 export type Json =
   | string
@@ -147,6 +147,12 @@ export type Database = {
           file_size: number | null;
           nadir_patch_path: string | null;
           nadir_disabled: boolean;
+          cleaned_path: string | null;
+          cleaned_compat_path: string | null;
+          cleaned_enabled: boolean;
+          staged_path: string | null;
+          staged_compat_path: string | null;
+          staged_enabled: boolean;
           adjust_brightness: number;
           adjust_contrast: number;
           adjust_saturation: number;
@@ -172,6 +178,12 @@ export type Database = {
           file_size?: number | null;
           nadir_patch_path?: string | null;
           nadir_disabled?: boolean;
+          cleaned_path?: string | null;
+          cleaned_compat_path?: string | null;
+          cleaned_enabled?: boolean;
+          staged_path?: string | null;
+          staged_compat_path?: string | null;
+          staged_enabled?: boolean;
           adjust_brightness?: number;
           adjust_contrast?: number;
           adjust_saturation?: number;
@@ -197,6 +209,12 @@ export type Database = {
           file_size?: number | null;
           nadir_patch_path?: string | null;
           nadir_disabled?: boolean;
+          cleaned_path?: string | null;
+          cleaned_compat_path?: string | null;
+          cleaned_enabled?: boolean;
+          staged_path?: string | null;
+          staged_compat_path?: string | null;
+          staged_enabled?: boolean;
           adjust_brightness?: number;
           adjust_contrast?: number;
           adjust_saturation?: number;
@@ -571,6 +589,69 @@ export type Database = {
             columns: ["hotspot_id"];
             isOneToOne: false;
             referencedRelation: "hotspots";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      staging_jobs: {
+        Row: {
+          id: string;
+          tour_id: string;
+          scene_id: string | null;
+          kind: string;
+          status: string;
+          params: Json;
+          result_path: string | null;
+          error: string | null;
+          cost_cents: number | null;
+          provider: string | null;
+          provider_job_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          tour_id: string;
+          scene_id?: string | null;
+          kind: string;
+          status?: string;
+          params?: Json;
+          result_path?: string | null;
+          error?: string | null;
+          cost_cents?: number | null;
+          provider?: string | null;
+          provider_job_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          tour_id?: string;
+          scene_id?: string | null;
+          kind?: string;
+          status?: string;
+          params?: Json;
+          result_path?: string | null;
+          error?: string | null;
+          cost_cents?: number | null;
+          provider?: string | null;
+          provider_job_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "staging_jobs_tour_id_fkey";
+            columns: ["tour_id"];
+            isOneToOne: false;
+            referencedRelation: "tours";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "staging_jobs_scene_id_fkey";
+            columns: ["scene_id"];
+            isOneToOne: false;
+            referencedRelation: "scenes";
             referencedColumns: ["id"];
           },
         ];

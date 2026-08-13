@@ -4,6 +4,11 @@
  * do not leak live WebGL contexts (browsers cap how many can exist).
  */
 
+import {
+  resolveViewerVariant,
+  type SceneVariantPaths,
+} from "@/lib/staging/variant-paths";
+
 const FALLBACK_MAX_TEXTURE_SIZE = 4096;
 
 let memoized: number | null = null;
@@ -47,25 +52,34 @@ export function getMaxTextureSize(): number {
 
 export type PanoramaUrlTier = "full" | "compat";
 
-export type ScenePanoramaSource = {
+export type ScenePanoramaSource = SceneVariantPaths & {
   id?: string;
-  storage_path: string;
-  compat_path: string | null;
   width: number | null;
 };
 
 /**
- * Choose full-res vs 4k compat based on device GPU limits.
- * If the original exceeds the limit and there is no compat file, still return
- * the full URL so the load error path can surface a failure instead of a black sphere.
+ * Choose which variant to show (staged → cleaned → original), then full-res
+ * vs 4k compat based on device GPU limits.
+ *
+ * CRITICAL: Call this synchronously when building VirtualTour nodes — never
+ * hot-swap the panorama URL after setNodes(nodes, startId).
  */
 export function resolvePanoramaPath(
   scene: ScenePanoramaSource,
   maxTextureSize: number = getMaxTextureSize(),
-): { path: string; tier: PanoramaUrlTier } {
+): { path: string; tier: PanoramaUrlTier; variant: "staged" | "cleaned" | "original" } {
+  const variant = resolveViewerVariant(scene);
   const width = scene.width ?? 0;
-  if (width > maxTextureSize && scene.compat_path) {
-    return { path: scene.compat_path, tier: "compat" };
+  if (width > maxTextureSize && variant.compatPath) {
+    return {
+      path: variant.compatPath,
+      tier: "compat",
+      variant: variant.kind,
+    };
   }
-  return { path: scene.storage_path, tier: "full" };
+  return {
+    path: variant.fullPath,
+    tier: "full",
+    variant: variant.kind,
+  };
 }

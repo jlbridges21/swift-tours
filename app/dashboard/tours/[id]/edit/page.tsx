@@ -9,6 +9,7 @@ import {
   listSceneGroupsForTour,
   listScenesForTour,
 } from "@/lib/queries/tours";
+import { isStagingEnabled } from "@/lib/staging/providers";
 import { createClient } from "@/lib/supabase/server";
 
 type EditTourPageProps = {
@@ -49,6 +50,7 @@ export default async function EditTourPage({ params }: EditTourPageProps) {
       hotspots={hotspots}
       hotspotImages={hotspotImages}
       userId={user.id}
+      stagingEnabled={isStagingEnabled()}
     />
   );
 }
