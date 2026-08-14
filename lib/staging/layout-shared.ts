@@ -42,9 +42,40 @@ export type StagingLayout = {
   planned_at: string;
 };
 
+export class LayoutPieceConservationError extends Error {
+  readonly missing: string[];
+  readonly duplicated: string[];
+  readonly unexpected: string[];
+
+  constructor(options: {
+    missing: string[];
+    duplicated: string[];
+    unexpected: string[];
+  }) {
+    const parts: string[] = [];
+    if (options.missing.length) {
+      parts.push(`missing: ${JSON.stringify(options.missing)}`);
+    }
+    if (options.duplicated.length) {
+      parts.push(`duplicated: ${JSON.stringify(options.duplicated)}`);
+    }
+    if (options.unexpected.length) {
+      parts.push(`unexpected: ${JSON.stringify(options.unexpected)}`);
+    }
+    super(
+      `Layout piece conservation violated — every canonical piece must appear exactly once. ${parts.join("; ")}`,
+    );
+    this.name = "LayoutPieceConservationError";
+    this.missing = options.missing;
+    this.duplicated = options.duplicated;
+    this.unexpected = options.unexpected;
+  }
+}
+
 /**
  * Split a locked room description into discrete furniture pieces.
  * Prefer comma-separated clauses; keep each piece concrete.
+ * This list is the contract — parse once and conserve thereafter.
  */
 export function splitRoomDescriptionIntoPieces(description: string): string[] {
   const cleaned = description.replace(/\s+/g, " ").trim();
@@ -62,6 +93,92 @@ export function splitRoomDescriptionIntoPieces(description: string): string[] {
   return [cleaned.replace(/\.$/, "")];
 }
 
+/**
+ * Hard invariant: every canonical piece appears EXACTLY ONCE across all views.
+ * Throws LayoutPieceConservationError on violation — never repairs.
+ */
+export function assertPieceConservation(
+  canonical: string[],
+  layout: StagingLayout,
+): void {
+  const counts = new Map<string, number>();
+  for (const v of layout.views) {
+    for (const p of v.pieces) {
+      counts.set(p, (counts.get(p) ?? 0) + 1);
+    }
+  }
+
+  const missing: string[] = [];
+  const duplicated: string[] = [];
+  for (const piece of canonical) {
+    const n = counts.get(piece) ?? 0;
+    if (n === 0) missing.push(piece);
+    if (n > 1) duplicated.push(piece);
+    counts.delete(piece);
+  }
+  const unexpected = [...counts.keys()];
+
+  if (missing.length || duplicated.length || unexpected.length) {
+    throw new LayoutPieceConservationError({ missing, duplicated, unexpected });
+  }
+}
+
+/** Log canonical list beside per-view assignment for bake-off / job visibility. */
+export function formatPieceConservationLog(
+  canonical: string[],
+  layout: StagingLayout,
+): string {
+  const lines = [
+    "canonical pieces:",
+    ...canonical.map((p, i) => `  ${i + 1}. ${p}`),
+    "per-view assignment:",
+    ...layout.views.map(
+      (v) =>
+        `  view ${v.index}: ${
+          v.pieces.length ? v.pieces.map((p) => JSON.stringify(p)).join(", ") : "(empty)"
+        }`,
+    ),
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * Map a free-text label onto an unused canonical piece (exact, then fuzzy).
+ * Returns null when no unused canonical match exists.
+ */
+export function matchCanonicalPiece(
+  label: string,
+  canonical: string[],
+  used: Set<string>,
+): string | null {
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+
+  const exact = canonical.find((c) => !used.has(c) && c.toLowerCase() === lower);
+  if (exact) return exact;
+
+  const fuzzy = canonical.find((c) => {
+    if (used.has(c)) return false;
+    const ck = c.toLowerCase();
+    return (
+      ck.includes(lower.slice(0, 28)) ||
+      lower.includes(ck.slice(0, 28)) ||
+      tokenOverlap(ck, lower) >= 0.5
+    );
+  });
+  return fuzzy ?? null;
+}
+
+function tokenOverlap(a: string, b: string): number {
+  const ta = new Set(a.split(/\W+/).filter((t) => t.length > 2));
+  const tb = new Set(b.split(/\W+/).filter((t) => t.length > 2));
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let hit = 0;
+  for (const t of ta) if (tb.has(t)) hit += 1;
+  return hit / Math.min(ta.size, tb.size);
+}
+
 export function piecesForView(
   layout: StagingLayout | null | undefined,
   viewIndex: number,
@@ -71,26 +188,80 @@ export function piecesForView(
   return entry?.pieces ?? [];
 }
 
-/** Per-view staging prompt — pieces first for adherence, then no-dupe, then globals. */
+/**
+ * Prompt framing variants for adherence experiments / production default.
+ * Default is "completion" — short-list experiment: completion + vacant held;
+ * current + exclusion invented whole seating groups.
+ */
+export type StagingPromptFraming =
+  | "current"
+  | "completion"
+  | "exclusion"
+  | "vacant";
+
+/**
+ * Per-view staging prompt. Default framing is "completion" — the short-list
+ * experiment showed it (and "vacant") obey "add nothing else"; "current" and
+ * "exclusion" still invent whole seating groups.
+ */
 export function composeViewStagingPrompt(options: {
   pieces: string[];
   globalDescriptors: string;
+  framing?: StagingPromptFraming;
 }): string | null {
   const pieces = options.pieces.map((p) => p.trim()).filter(Boolean);
   if (pieces.length === 0) return null;
 
   const list = pieces.join("; ");
   const descriptors = options.globalDescriptors.trim();
-
-  return (
-    `Add to this view: ${list}. ` +
-    `Some furniture may already be visible in this view. Leave it exactly as it is and do not duplicate it. Add only the pieces listed above. ` +
-    (descriptors ? `${descriptors}. ` : "") +
-    `Add NO other furniture, rugs, art, or decor. The rest of this room's furnishings are ` +
-    `outside this view and must not appear here. ` +
+  const framing = options.framing ?? "completion";
+  const arch =
     `Keep the existing walls, windows, doors, flooring, ceiling, trim, and light fixtures ` +
     `exactly as they are. Do not change the room's architecture, layout, or perspective. ` +
-    `Photorealistic real estate photography, natural lighting matching the existing scene.`
+    `Photorealistic real estate photography, natural lighting matching the existing scene.`;
+  const alreadyThere =
+    `Some furniture may already be visible in this view. Leave it exactly as it is and do not duplicate it. `;
+
+  if (framing === "current") {
+    return (
+      `Add to this view: ${list}. ` +
+      alreadyThere +
+      `Add only the pieces listed above. ` +
+      (descriptors ? `${descriptors}. ` : "") +
+      `Add NO other furniture, rugs, art, or decor. The rest of this room's furnishings are ` +
+      `outside this view and must not appear here. ` +
+      arch
+    );
+  }
+
+  if (framing === "exclusion") {
+    return (
+      `${list}. Do not add seating, tables, lamps, rugs, or artwork beyond what is listed. ` +
+      alreadyThere +
+      `Add only the pieces listed above. ` +
+      (descriptors ? `${descriptors}. ` : "") +
+      arch
+    );
+  }
+
+  if (framing === "vacant") {
+    return (
+      `This is a vacant real-estate photograph. Place ONLY these exact items and leave ` +
+      `every other floor and wall surface empty: ${list}. ` +
+      `Do not invent a seating group, coffee table, rug, lamp, plant, or artwork to "complete" the room. ` +
+      alreadyThere +
+      (descriptors ? `Match materials/palette only: ${descriptors}. ` : "") +
+      arch
+    );
+  }
+
+  // completion (default)
+  return (
+    `This room is already fully staged. The only thing missing is ${list}. ` +
+    `Add exactly that and nothing else. Every other surface stays empty. ` +
+    alreadyThere +
+    (descriptors ? `${descriptors}. ` : "") +
+    arch
   );
 }
 
@@ -123,6 +294,10 @@ export function viewImageSeed(tourSeed: number, viewIndex: number): number {
 const ANCHOR_RE =
   /\b(sofa|couch|sectional|loveseat|bed|dining table|desk)\b/i;
 const FLOOR_CENTRE_RE = /\b(rug|carpet|coffee table|ottoman|centerpiece)\b/i;
+const PRIMARY_GROUP_RE =
+  /\b(sofas?|couches?|sectionals?|loveseats?|rugs?|carpets?|coffee tables?|canvas|paintings?|abstract)\b/i;
+const SECONDARY_GROUP_RE =
+  /\b(armchairs?|side chairs?|accent chairs?|figs?|plants?|fiddle|floor lamps?|consoles?)\b/i;
 
 function isAnchorPiece(p: string): boolean {
   return ANCHOR_RE.test(p);
@@ -144,7 +319,6 @@ export function pieceReferencesAnchor(piece: string, anchor: string): boolean {
   if (!nouns || nouns.length === 0) return false;
   return nouns.some((n) => {
     if (!lower.includes(n)) return false;
-    // Dependent phrasing, or shared noun while this piece is not itself the anchor type.
     return (
       new RegExp(
         `\\b(above|beside|with|on|under|near|behind|facing|against)\\b[\\s\\w-]*\\b${n}\\b`,
@@ -156,46 +330,41 @@ export function pieceReferencesAnchor(piece: string, anchor: string): boolean {
 }
 
 /**
- * Cluster pieces into coherent groupings (primary seating + dependents first).
- * Used by the fallback planner and --force-split.
+ * Cluster pieces into coherent groupings.
+ * Primary: sofa/bed + dependents (canvas above sofa, rug, coffee table).
+ * Secondary: armchairs, plants, accent pieces.
+ * Every input piece appears in exactly one group.
  */
 export function clusterFurnitureGroups(pieces: string[]): string[][] {
   if (pieces.length === 0) return [];
-  const remaining = [...pieces];
-  const anchors = remaining.filter(isAnchorPiece);
-  const primaryAnchor = anchors[0] ?? remaining[0]!;
+
   const primary: string[] = [];
   const secondary: string[] = [];
+  const anchors = pieces.filter(isAnchorPiece);
+  const primaryAnchor = anchors[0] ?? null;
 
-  for (const p of remaining) {
-    if (p === primaryAnchor) {
+  for (const p of pieces) {
+    if (primaryAnchor && p === primaryAnchor) {
       primary.push(p);
       continue;
     }
     if (
-      pieceReferencesAnchor(p, primaryAnchor) ||
+      (primaryAnchor && pieceReferencesAnchor(p, primaryAnchor)) ||
       isFloorCentrePiece(p) ||
-      /\b(canvas|painting|art above|abstract)\b/i.test(p)
+      PRIMARY_GROUP_RE.test(p)
     ) {
       primary.push(p);
       continue;
     }
-    if (anchors.includes(p) && p !== primaryAnchor) {
+    if (SECONDARY_GROUP_RE.test(p)) {
       secondary.push(p);
       continue;
     }
-    if (
-      /\b(armchair|side chair|accent chair|fig|plant|floor lamp|console)\b/i.test(
-        p,
-      )
-    ) {
-      secondary.push(p);
-      continue;
-    }
+    // Unknown → keep with primary seating group.
     primary.push(p);
   }
 
-  // Ensure dependents of secondary anchors stay with them.
+  // Dependents of secondary pieces move with them.
   const moved: string[] = [];
   for (const p of primary) {
     for (const a of secondary) {
@@ -208,24 +377,43 @@ export function clusterFurnitureGroups(pieces: string[]): string[][] {
   }
   const primaryFinal = primary.filter((p) => !moved.includes(p));
 
-  if (secondary.length === 0) return [primaryFinal];
-  return [primaryFinal, secondary];
+  // Conservation inside the clusterer.
+  const out =
+    secondary.length === 0 ? [primaryFinal] : [primaryFinal, secondary];
+  const seen = new Set(out.flat());
+  if (seen.size !== pieces.length || pieces.some((p) => !seen.has(p))) {
+    throw new LayoutPieceConservationError({
+      missing: pieces.filter((p) => !seen.has(p)),
+      duplicated: [],
+      unexpected: [...seen].filter((p) => !pieces.includes(p)),
+    });
+  }
+  return out;
 }
 
 /**
  * Move any piece that references another piece onto that piece's view.
+ * Conserves the canonical piece set — throws if a piece would be lost.
  */
-export function coalesceRelatedPieces(layout: StagingLayout): StagingLayout {
+export function coalesceRelatedPieces(
+  layout: StagingLayout,
+  canonical?: string[],
+): StagingLayout {
+  const contract =
+    canonical ?? splitRoomDescriptionIntoPieces(layout.source_room_description);
+
   const pieceToView = new Map<string, number>();
   for (const v of layout.views) {
     for (const p of v.pieces) pieceToView.set(p, v.index);
   }
-  const all = layout.views.flatMap((v) => v.pieces);
+
+  // Only move pieces that are in the layout; never invent.
+  const present = [...pieceToView.keys()];
   let changed = true;
   while (changed) {
     changed = false;
-    for (const piece of all) {
-      for (const other of all) {
+    for (const piece of present) {
+      for (const other of present) {
         if (!pieceReferencesAnchor(piece, other)) continue;
         const from = pieceToView.get(piece);
         const to = pieceToView.get(other);
@@ -235,59 +423,108 @@ export function coalesceRelatedPieces(layout: StagingLayout): StagingLayout {
       }
     }
   }
-  const views = layout.views.map((v) => ({ index: v.index, pieces: [] as string[] }));
+
+  const views = layout.views.map((v) => ({
+    index: v.index,
+    pieces: [] as string[],
+  }));
   for (const [piece, index] of pieceToView) {
     views.find((v) => v.index === index)?.pieces.push(piece);
   }
-  // Preserve original order within each view.
+  // Preserve canonical order within each view.
   for (const v of views) {
-    v.pieces.sort((a, b) => all.indexOf(a) - all.indexOf(b));
+    v.pieces.sort((a, b) => contract.indexOf(a) - contract.indexOf(b));
   }
-  return { ...layout, views, planned_at: new Date().toISOString() };
+
+  const next: StagingLayout = {
+    ...layout,
+    views,
+    planned_at: new Date().toISOString(),
+  };
+  assertPieceConservation(contract, next);
+  return next;
 }
 
 /**
- * Force-split for bake-off: two coherent groupings across two usable views.
- * Never orphans a dependent (canvas above sofa stays with the sofa).
+ * Force-split for bake-off: two coherent groupings across TWO DISTINCT views.
+ * Always rebuilds from the canonical source description (never from a broken layout).
+ * Related pieces stay together: sofa + canvas + rug + coffee table vs armchairs + fig.
  */
 export function forceSplitLayout(
   layout: StagingLayout,
   analysis?: StagingRoomAnalysis,
 ): StagingLayout {
-  const allPieces = layout.views.flatMap((v) => v.pieces);
-  if (allPieces.length < 2) return layout;
-
-  const groups = clusterFurnitureGroups(allPieces);
-  if (groups.length < 2) {
-    // Artificial but coherent: anchors+deps vs remaining accents.
-    const [only] = groups;
-    if (!only || only.length < 2) return layout;
-    const mid = Math.max(1, Math.ceil(only.length / 2));
-    // Prefer splitting after the primary anchor cluster — keep first half together.
-    groups.length = 0;
-    groups.push(only.slice(0, mid), only.slice(mid));
+  const canonical = splitRoomDescriptionIntoPieces(
+    layout.source_room_description,
+  );
+  if (canonical.length < 2) {
+    throw new Error(
+      `--force-split requires at least 2 canonical pieces; got ${canonical.length}`,
+    );
   }
 
-  const usableIndexes = layout.views
-    .map((v) => v.index)
-    .filter((i) => {
-      const cap = analysis?.views.find((a) => a.index === i)?.capacity;
-      return cap !== "clear";
-    });
-  const aIdx = usableIndexes[0] ?? 0;
-  const bIdx = usableIndexes[1] ?? usableIndexes[0] ?? 1;
+  const groups = clusterFurnitureGroups(canonical);
+  let groupA = groups[0] ?? [];
+  let groupB = groups[1] ?? [];
 
-  const next = layout.views.map((v) => ({ index: v.index, pieces: [] as string[] }));
-  const slotA = next.find((v) => v.index === aIdx)!;
-  const slotB = next.find((v) => v.index === bIdx) ?? slotA;
-  slotA.pieces = groups[0] ?? [];
-  slotB.pieces = groups[1] ?? [];
+  // Guarantee two non-empty groups for progressive-compositing tests.
+  if (groupB.length === 0) {
+    if (groupA.length < 2) {
+      throw new Error(
+        `--force-split cannot form two groups from: ${JSON.stringify(canonical)}`,
+      );
+    }
+    // Keep primary anchor cluster intact: peel trailing secondary-ish pieces.
+    const peelAt = Math.max(1, groupA.length - Math.ceil(groupA.length / 3));
+    groupB = groupA.slice(peelAt);
+    groupA = groupA.slice(0, peelAt);
+  }
 
-  return coalesceRelatedPieces({
-    ...layout,
-    views: next,
-    planned_at: new Date().toISOString(),
+  if (groupA.length === 0 || groupB.length === 0) {
+    throw new Error(
+      `--force-split produced an empty group: A=${JSON.stringify(groupA)} B=${JSON.stringify(groupB)}`,
+    );
+  }
+
+  const viewIndexes = layout.views.map((v) => v.index).sort((a, b) => a - b);
+  if (viewIndexes.length < 2) {
+    throw new Error("--force-split needs at least 2 views in the layout.");
+  }
+
+  // Prefer two non-clear views, but never collapse onto the same index.
+  const usable = viewIndexes.filter((i) => {
+    const cap = analysis?.views.find((a) => a.index === i)?.capacity;
+    return cap !== "clear";
   });
+  const aIdx = usable[0] ?? viewIndexes[0]!;
+  const bIdx =
+    usable.find((i) => i !== aIdx) ??
+    viewIndexes.find((i) => i !== aIdx) ??
+    viewIndexes[1]!;
+
+  if (aIdx === bIdx) {
+    throw new Error(
+      `--force-split failed to pick two distinct views (only index ${aIdx}).`,
+    );
+  }
+
+  const nextViews = layout.views.map((v) => ({
+    index: v.index,
+    pieces: [] as string[],
+  }));
+  const slotA = nextViews.find((v) => v.index === aIdx)!;
+  const slotB = nextViews.find((v) => v.index === bIdx)!;
+  slotA.pieces = [...groupA];
+  slotB.pieces = [...groupB];
+
+  return coalesceRelatedPieces(
+    {
+      ...layout,
+      views: nextViews,
+      planned_at: new Date().toISOString(),
+    },
+    canonical,
+  );
 }
 
 /**
@@ -299,7 +536,7 @@ export function buildFallbackLayoutPlan(options: {
   roomDescription: string;
   analysis: StagingRoomAnalysis;
 }): StagingLayout {
-  const pieces = splitRoomDescriptionIntoPieces(options.roomDescription);
+  const canonical = splitRoomDescriptionIntoPieces(options.roomDescription);
   const views = options.analysis.views.map((v) => ({
     index: v.index,
     pieces: [] as string[],
@@ -308,7 +545,7 @@ export function buildFallbackLayoutPlan(options: {
   const largeHost =
     views.find((_, i) => options.analysis.views[i]?.capacity === "large") ??
     views[0];
-  const groups = clusterFurnitureGroups(pieces);
+  const groups = clusterFurnitureGroups(canonical);
 
   if (largeHost && groups[0]) {
     largeHost.pieces.push(...groups[0]);
@@ -324,19 +561,31 @@ export function buildFallbackLayoutPlan(options: {
     second?.pieces.push(...groups[1]);
   }
 
-  // Clear-capacity views stay empty.
+  // Clear-capacity views stay empty — but never wipe pieces we just assigned
+  // if that would orphan them onto a clear host. Re-home first.
   for (let i = 0; i < views.length; i++) {
-    if (options.analysis.views[i]?.capacity === "clear") {
-      views[i]!.pieces = [];
-    }
+    if (options.analysis.views[i]?.capacity !== "clear") continue;
+    const orphaned = views[i]!.pieces;
+    views[i]!.pieces = [];
+    if (orphaned.length === 0) continue;
+    const host =
+      views.find(
+        (v, j) =>
+          v.index !== views[i]!.index &&
+          options.analysis.views[j]?.capacity !== "clear",
+      ) ?? largeHost;
+    host?.pieces.push(...orphaned);
   }
 
-  return coalesceRelatedPieces({
-    strategy: options.strategy,
-    views,
-    source_room_description: options.roomDescription,
-    planned_at: new Date().toISOString(),
-  });
+  return coalesceRelatedPieces(
+    {
+      strategy: options.strategy,
+      views,
+      source_room_description: options.roomDescription,
+      planned_at: new Date().toISOString(),
+    },
+    canonical,
+  );
 }
 
 export function buildFallbackRoomAnalysis(
@@ -350,14 +599,20 @@ export function buildFallbackRoomAnalysis(
       i === 0 ? "large" : i === viewCount - 1 ? "clear" : "small";
     views.push({
       index: i,
-      wall: capacity === "clear" ? "opening" : capacity === "large" ? "blank_wall" : "mixed",
+      wall:
+        capacity === "clear"
+          ? "opening"
+          : capacity === "large"
+            ? "blank_wall"
+            : "mixed",
       wall_detail:
         capacity === "clear"
           ? "opening or circulation — keep clear"
           : capacity === "large"
             ? "mostly blank wall with usable floor"
             : "mixed features with limited floor",
-      floor_space: capacity === "large" ? "ample" : capacity === "small" ? "moderate" : "narrow",
+      floor_space:
+        capacity === "large" ? "ample" : capacity === "small" ? "moderate" : "narrow",
       capacity,
     });
   }

@@ -8,7 +8,8 @@
  *   STRATEGY=A npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts
  *
  * Defaults to strategy C. Reuses scenes.staging_room_analysis + staging_layout when present
- * unless --regenerate-plan. --force-split redistributes pieces across ≥2 views.
+ * unless --regenerate-plan. --force-split rebuilds from the canonical room
+ * description into ≥2 coherent non-empty views (tests progressive compositing).
  */
 import Module from "node:module";
 
@@ -56,9 +57,12 @@ async function main() {
   type StagingQuestionnaire =
     import("../lib/staging/staging-plan-shared").StagingQuestionnaire;
   const {
+    assertPieceConservation,
     composeViewStagingPrompt,
     forceSplitLayout,
+    formatPieceConservationLog,
     piecesForView,
+    splitRoomDescriptionIntoPieces,
     viewImageSeed,
   } = await import("../lib/staging/layout-shared");
   type StagingLayout = import("../lib/staging/layout-shared").StagingLayout;
@@ -268,9 +272,21 @@ async function main() {
     }
 
     if (forceSplit) {
-      layout = forceSplitLayout(layout, analysis);
-      console.info("[bakeoff] --force-split applied:", JSON.stringify(layout.views));
+      // Rebuild from the bake-off room description contract — never from a
+      // possibly incomplete stored layout's piece arrays.
+      layout = forceSplitLayout(
+        { ...layout, source_room_description: roomDescription },
+        analysis,
+      );
+      console.info("\n========== --force-split (before generate) ==========");
+      console.info(JSON.stringify(layout.views, null, 2));
     }
+
+    const canonical = splitRoomDescriptionIntoPieces(roomDescription);
+    assertPieceConservation(canonical, layout);
+    console.log("\n========== PIECE CONSERVATION ==========");
+    console.log(formatPieceConservationLog(canonical, layout));
+
     console.log("\n========== ROOM ANALYSIS ==========");
     console.log(JSON.stringify(analysis, null, 2));
     console.log("\n========== LAYOUT PLAN ==========");

@@ -15,9 +15,12 @@ import {
 } from "@/lib/staging/projection";
 import { generateLayoutPlan } from "@/lib/staging/layout-plan";
 import {
+  assertPieceConservation,
   collageAdjacentRoomInstruction,
   composeViewStagingPrompt,
+  formatPieceConservationLog,
   piecesForView,
+  splitRoomDescriptionIntoPieces,
   viewImageSeed,
   type StagingLayout,
   type StagingRoomAnalysis,
@@ -425,6 +428,15 @@ export async function processStageRoomJob(job: {
         console.info(
           "[stage_room] layout plan",
           JSON.stringify(layout, null, 2),
+        );
+      }
+
+      {
+        const canonical = splitRoomDescriptionIntoPieces(roomDescription);
+        assertPieceConservation(canonical, layout);
+        console.info(
+          "[stage_room] piece conservation:\n" +
+            formatPieceConservationLog(canonical, layout),
         );
       }
 
