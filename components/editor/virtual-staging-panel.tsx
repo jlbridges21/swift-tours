@@ -152,7 +152,7 @@ export function VirtualStagingPanel({
   const [editingPlan, setEditingPlan] = useState(!stagingPlan);
   const [jobId, setJobId] = useState<string | null>(null);
   const [spendCents, setSpendCents] = useState(0);
-  const [strategy, setStrategy] = useState<ViewStrategyId>("A");
+  const [strategy, setStrategy] = useState<ViewStrategyId>("C");
   const [intensity, setIntensity] = useState<StagingIntensity>("fully");
   const [note, setNote] = useState("");
   const [questionnaire, setQuestionnaire] = useState<StagingQuestionnaire>({

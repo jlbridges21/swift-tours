@@ -9,16 +9,22 @@ import {
   assertOutsideMaskUnchanged,
   compositeWithBlendAlpha,
   equirectToPerspective,
-  nadirCrop,
-  nadirCropToEquirect,
   perspectiveToEquirect,
   type CoverageMask,
   type RgbaImage,
 } from "@/lib/staging/projection";
+import { generateLayoutPlan } from "@/lib/staging/layout-plan";
+import {
+  collageContinuityInstruction,
+  composeViewStagingPrompt,
+  piecesForView,
+  type StagingLayout,
+  type StagingRoomAnalysis,
+} from "@/lib/staging/layout-shared";
 import { getStagingProvider } from "@/lib/staging/providers";
 import { FAL_KONTEXT_COST_CENTS } from "@/lib/staging/providers/fal-kontext";
+import { analyzeRoomViews } from "@/lib/staging/room-analysis";
 import {
-  composeRoomStagingPrompt,
   type RoomType,
   type StagingIntensity,
   type StagingPlan,
@@ -55,6 +61,7 @@ type ViewResultEntry = {
   resultPath?: string;
   providerJobId?: string;
   costCents?: number;
+  skipped?: boolean;
 };
 
 function withoutLease(
@@ -99,25 +106,32 @@ async function uploadDebug(
 /**
  * Side-by-side collage so single-image Kontext can see the prior adjacent view.
  * Left = current empty crop; right = previous staged result.
+ *
+ * Sized at 16:9 (Kontext has no 2:1 aspect_ratio). Each half is as large as
+ * possible so the left extract is ~strategy.size after the model returns.
  */
 async function buildReferenceCollage(
   current: Buffer,
   previous: Buffer,
+  halfSize: number,
 ): Promise<Buffer> {
-  const left = sharp(current).resize(768, 768, { fit: "fill" });
-  const right = sharp(previous).resize(768, 768, { fit: "fill" });
+  const height = halfSize;
+  const width = Math.round((height * 16) / 9);
+  const halfW = Math.floor(width / 2);
+  const left = sharp(current).resize(halfW, height, { fit: "fill" });
+  const right = sharp(previous).resize(width - halfW, height, { fit: "fill" });
   const [l, r] = await Promise.all([left.toBuffer(), right.toBuffer()]);
   return sharp({
     create: {
-      width: 1536,
-      height: 768,
+      width,
+      height,
       channels: 3,
       background: { r: 0, g: 0, b: 0 },
     },
   })
     .composite([
       { input: l, left: 0, top: 0 },
-      { input: r, left: 768, top: 0 },
+      { input: r, left: halfW, top: 0 },
     ])
     .jpeg({ quality: 90 })
     .toBuffer();
@@ -162,7 +176,7 @@ export async function processStageRoomJob(job: {
   const { data: scene, error: sceneError } = await admin
     .from("scenes")
     .select(
-      "id, tour_id, storage_path, cleaned_path, cleaned_enabled, staged_path, staged_compat_path, staged_enabled, room_type, width, height",
+      "id, tour_id, storage_path, cleaned_path, cleaned_enabled, staged_path, staged_compat_path, staged_enabled, room_type, width, height, staging_room_analysis, staging_layout",
     )
     .eq("id", job.scene_id)
     .maybeSingle();
@@ -188,7 +202,7 @@ export async function processStageRoomJob(job: {
     );
   }
 
-  const strategyId = (job.params.strategy as ViewStrategyId) || "A";
+  const strategyId = (job.params.strategy as ViewStrategyId) || "C";
   const strategy = getViewStrategy(strategyId);
   const roomType = (job.params.roomType as RoomType) ||
     (scene.room_type as RoomType) ||
@@ -204,6 +218,10 @@ export async function processStageRoomJob(job: {
   const sceneNote =
     typeof job.params.note === "string" ? job.params.note.trim() : "";
 
+  const roomDescription =
+    plan.rooms[roomType]?.trim() ||
+    `tasteful furnishings appropriate for a ${roomType.replace(/_/g, " ")}`;
+
   const totalSteps = strategy.views.length + 1; // views + composite
   let step = typeof job.step === "number" ? job.step : 0;
   let viewResults = Array.isArray(job.view_results)
@@ -213,65 +231,133 @@ export async function processStageRoomJob(job: {
     ? (job.reference_paths.filter((p) => typeof p === "string") as string[])
     : [];
 
-  // Bootstrap views + totals on first tick only (do not reset progress).
+  let layout = (job.params.layout ?? scene.staging_layout) as
+    | StagingLayout
+    | null;
+
+  // Bootstrap: analysis → layout → view rows (once).
   if (!job.total_steps) {
-    const basePrompt = composeRoomStagingPrompt({ roomType, plan, intensity });
-    const promptWithNote = sceneNote
-      ? `${basePrompt} Additional note for this room: ${sceneNote}`
-      : basePrompt;
+    try {
+      const sourcePath = resolveStagingInputPath(scene);
+      const { data: file, error: dlErr } = await admin.storage
+        .from("panoramas")
+        .download(sourcePath);
+      if (dlErr || !file) {
+        return failJob(job.id, dlErr?.message ?? "Failed to download panorama.");
+      }
+      const original = await decodeImageToRgba(
+        Buffer.from(await file.arrayBuffer()),
+      );
 
-    await admin
-      .from("staging_jobs")
-      .update({
-        total_steps: totalSteps,
-        step: 0,
-        view_results: [] as unknown as Json,
-        reference_paths: [] as unknown as Json,
-        params: {
-          ...withoutLease(job.params),
-          strategy: strategyId,
-          roomType,
-          intensity,
-          seed,
-          prompt: promptWithNote,
-        } as Json,
-      })
-      .eq("id", job.id);
-
-    // Insert staging_views rows without overwriting existing progress.
-    const { data: existingViews } = await admin
-      .from("staging_views")
-      .select("view_index")
-      .eq("job_id", job.id);
-    const have = new Set((existingViews ?? []).map((v) => v.view_index));
-    const missing = strategy.views.filter((v) => !have.has(v.index));
-    if (missing.length > 0) {
-      await admin.from("staging_views").insert(
-        missing.map((v) => ({
-          scene_id: scene.id,
-          job_id: job.id,
-          view_index: v.index,
+      const analysisUrls: string[] = [];
+      for (const v of strategy.views) {
+        const persp = equirectToPerspective(original, {
           yaw: v.yaw,
           pitch: v.pitch,
           fov: v.fov,
-          status: "pending" as const,
-        })),
+          width: Math.min(768, strategy.size),
+          height: Math.min(768, strategy.size),
+        });
+        const jpeg = await encodeRgbaToJpeg(persp, 85);
+        const path = `${stagingWorkDir(ownerId, job.tour_id, job.id)}/analysis/${v.index}.jpg`;
+        await admin.storage.from("panoramas").upload(path, jpeg, {
+          contentType: "image/jpeg",
+          cacheControl: "60",
+          upsert: true,
+        });
+        analysisUrls.push(publicUrl(path));
+      }
+
+      const analysis: StagingRoomAnalysis = await analyzeRoomViews({
+        strategy: strategyId,
+        imageUrls: analysisUrls,
+      });
+      layout = await generateLayoutPlan({
+        strategy: strategyId,
+        roomDescription,
+        analysis,
+      });
+
+      await admin
+        .from("scenes")
+        .update({
+          staging_room_analysis: analysis as unknown as Json,
+          staging_layout: layout as unknown as Json,
+        })
+        .eq("id", scene.id);
+
+      console.info(
+        "[stage_room] room analysis",
+        JSON.stringify(analysis, null, 2),
       );
+      console.info(
+        "[stage_room] layout plan",
+        JSON.stringify(layout, null, 2),
+      );
+
+      await admin
+        .from("staging_jobs")
+        .update({
+          total_steps: totalSteps,
+          step: 0,
+          view_results: [] as unknown as Json,
+          reference_paths: [] as unknown as Json,
+          params: {
+            ...withoutLease(job.params),
+            strategy: strategyId,
+            roomType,
+            intensity,
+            seed,
+            sceneNote,
+            layout,
+            analysis,
+            globalDescriptors: plan.global_descriptors,
+          } as Json,
+        })
+        .eq("id", job.id);
+
+      const { data: existingViews } = await admin
+        .from("staging_views")
+        .select("view_index")
+        .eq("job_id", job.id);
+      const have = new Set((existingViews ?? []).map((v) => v.view_index));
+      const missing = strategy.views.filter((v) => !have.has(v.index));
+      if (missing.length > 0) {
+        await admin.from("staging_views").insert(
+          missing.map((v) => ({
+            scene_id: scene.id,
+            job_id: job.id,
+            view_index: v.index,
+            yaw: v.yaw,
+            pitch: v.pitch,
+            fov: v.fov,
+            status: "pending" as const,
+          })),
+        );
+      }
+      step = 0;
+      viewResults = [];
+      referencePaths = [];
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to plan room layout.";
+      console.error("[stage_room] bootstrap", message, err);
+      return failJob(job.id, message);
     }
-    step = 0;
-    viewResults = [];
-    referencePaths = [];
   }
 
-  const prompt =
-    typeof job.params.prompt === "string" && job.params.prompt.trim()
-      ? job.params.prompt.trim()
-      : (() => {
-          const base = composeRoomStagingPrompt({ roomType, plan, intensity });
-          return sceneNote
-            ? `${base} Additional note for this room: ${sceneNote}`
-            : base;
-        })();
+  if (!layout || !Array.isArray(layout.views)) {
+    layout = (scene.staging_layout as StagingLayout | null) ?? null;
+  }
+  if (!layout) {
+    return failJob(job.id, "Missing staging layout for this scene.");
+  }
+
+  const globalDescriptors =
+    typeof job.params.globalDescriptors === "string" &&
+    job.params.globalDescriptors.trim()
+      ? job.params.globalDescriptors.trim()
+      : plan.global_descriptors;
 
   // ── Composite step ──────────────────────────────────────────────────
   if (step >= strategy.views.length) {
@@ -286,7 +372,6 @@ export async function processStageRoomJob(job: {
         viewResults,
         params: job.params,
         debug,
-        prompt,
       });
     } catch (err) {
       const message =
@@ -299,9 +384,17 @@ export async function processStageRoomJob(job: {
   // ── View step ───────────────────────────────────────────────────────
   const viewSpec = strategy.views[step]!;
   const existing = viewResults.find((r) => r.index === step);
+  const viewPieces = piecesForView(layout, step);
+  const viewPrompt = composeViewStagingPrompt({
+    pieces: viewPieces,
+    globalDescriptors,
+  });
 
-  // Already succeeded — advance without re-paying. Re-queue for next tick.
-  if (existing?.status === "succeeded" && existing.resultPath) {
+  // Already succeeded / skipped — advance without re-paying.
+  if (
+    (existing?.status === "succeeded" && existing.resultPath) ||
+    existing?.status === "skipped"
+  ) {
     await admin
       .from("staging_jobs")
       .update({
@@ -312,6 +405,48 @@ export async function processStageRoomJob(job: {
       })
       .eq("id", job.id);
     return { status: "processing" };
+  }
+
+  // Empty piece list — skip the model call entirely.
+  if (!viewPrompt) {
+    const entry: ViewResultEntry = {
+      index: step,
+      status: "skipped",
+      skipped: true,
+      costCents: 0,
+    };
+    const nextResults = [
+      ...viewResults.filter((r) => r.index !== step),
+      entry,
+    ];
+    await admin
+      .from("staging_views")
+      .update({ status: "succeeded", result_path: null })
+      .eq("job_id", job.id)
+      .eq("view_index", step);
+    await admin
+      .from("staging_jobs")
+      .update({
+        status: "queued",
+        step: step + 1,
+        provider_job_id: null,
+        view_results: nextResults as unknown as Json,
+        params: withoutLease(job.params) as Json,
+      })
+      .eq("id", job.id);
+    console.info(`[stage_room] skipping empty view ${step}`);
+    return {
+      status: "processing",
+      result: {
+        candidatePath: "",
+        costCents:
+          typeof job.params.accruedCostCents === "number"
+            ? job.params.accruedCostCents
+            : null,
+        step: step + 1,
+        totalSteps,
+      },
+    };
   }
 
   let provider;
@@ -375,6 +510,12 @@ export async function processStageRoomJob(job: {
       }
     }
 
+    const resultMeta = await sharp(resultBuf).metadata();
+    console.info(
+      `[stage_room] view ${step} resolved ${resultMeta.width}×${resultMeta.height}` +
+        (job.params.usedCollage ? " (from collage left half)" : ""),
+    );
+
     const resultPath = stagingViewResultPath(
       ownerId,
       job.tour_id,
@@ -437,7 +578,6 @@ export async function processStageRoomJob(job: {
     await admin
       .from("staging_jobs")
       .update({
-        // Re-queue so the next poll tick can claim without waiting for stale.
         status: "queued",
         step: step + 1,
         provider_job_id: null,
@@ -477,23 +617,14 @@ export async function processStageRoomJob(job: {
       Buffer.from(await file.arrayBuffer()),
     );
 
-    let cropJpeg: Buffer;
-    if (strategyId === "D") {
-      const crop = nadirCrop(original, {
-        fovDegrees: 160,
-        size: strategy.size,
-      });
-      cropJpeg = await encodeRgbaToJpeg(crop, 92);
-    } else {
-      const persp = equirectToPerspective(original, {
-        yaw: viewSpec.yaw,
-        pitch: viewSpec.pitch,
-        fov: viewSpec.fov,
-        width: strategy.size,
-        height: strategy.size,
-      });
-      cropJpeg = await encodeRgbaToJpeg(persp, 92);
-    }
+    const persp = equirectToPerspective(original, {
+      yaw: viewSpec.yaw,
+      pitch: viewSpec.pitch,
+      fov: viewSpec.fov,
+      width: strategy.size,
+      height: strategy.size,
+    });
+    const cropJpeg = await encodeRgbaToJpeg(persp, 92);
 
     const sourceUpload = stagingViewSourcePath(
       ownerId,
@@ -518,7 +649,7 @@ export async function processStageRoomJob(job: {
       );
     }
 
-    // Adjacent reference: prior succeeded view as collage right half.
+    // Adjacent reference: prior succeeded (non-skipped) view as collage right half.
     let submitBuf = cropJpeg;
     let usedCollage = false;
     const prior = viewResults
@@ -530,7 +661,11 @@ export async function processStageRoomJob(job: {
         .download(prior.resultPath);
       if (prevFile) {
         const prevBuf = Buffer.from(await prevFile.arrayBuffer());
-        submitBuf = await buildReferenceCollage(cropJpeg, prevBuf);
+        submitBuf = await buildReferenceCollage(
+          cropJpeg,
+          prevBuf,
+          strategy.size,
+        );
         usedCollage = true;
       }
     }
@@ -547,9 +682,13 @@ export async function processStageRoomJob(job: {
     }
 
     const imageUrl = publicUrl(submitPath);
-    const stagedPrompt = usedCollage
-      ? `${prompt} The image is a side-by-side pair: furnish ONLY the LEFT half. The RIGHT half is an adjacent already-staged view — match the same furniture pieces, materials, and lighting in the overlap.`
-      : prompt;
+    let stagedPrompt = viewPrompt;
+    if (sceneNote) {
+      stagedPrompt = `${stagedPrompt} Additional note for this room: ${sceneNote}`;
+    }
+    if (usedCollage) {
+      stagedPrompt = `${stagedPrompt}${collageContinuityInstruction()}`;
+    }
 
     const submitted = await provider.submitInpaint({
       image: submitBuf,
@@ -558,6 +697,7 @@ export async function processStageRoomJob(job: {
       prompt: stagedPrompt,
       seed: seed + step * 17,
       numImages: 1,
+      aspectRatio: usedCollage ? "16:9" : "1:1",
     });
 
     await admin
@@ -582,9 +722,10 @@ export async function processStageRoomJob(job: {
           roomType,
           intensity,
           seed,
-          prompt,
+          layout,
           currentSourcePath: sourceUpload,
           usedCollage,
+          lastViewPrompt: stagedPrompt,
         } as Json,
       })
       .eq("id", job.id);
@@ -623,7 +764,6 @@ async function runCompositeStep(options: {
   viewResults: ViewResultEntry[];
   params: Record<string, unknown>;
   debug: boolean;
-  prompt: string;
 }): Promise<{
   status: "succeeded" | "failed" | "processing";
   result?: StageRoomJobResult;
@@ -641,11 +781,21 @@ async function runCompositeStep(options: {
     debug,
   } = options;
 
-  const succeeded = strategy.views.map((v) =>
-    viewResults.find((r) => r.index === v.index && r.status === "succeeded"),
-  );
-  if (succeeded.some((s) => !s?.resultPath)) {
-    return failJob(jobId, "Cannot composite — not all views succeeded.");
+  // Only views that produced a staged image participate in the composite.
+  const toBlend = strategy.views
+    .map((v) => {
+      const entry = viewResults.find(
+        (r) => r.index === v.index && r.status === "succeeded" && r.resultPath,
+      );
+      return entry ? { spec: v, entry } : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+
+  if (toBlend.length === 0) {
+    return failJob(
+      jobId,
+      "Cannot composite — no staged views (all empty or failed).",
+    );
   }
 
   const sourcePath = resolveStagingInputPath(scene);
@@ -665,18 +815,16 @@ async function runCompositeStep(options: {
     height: original.height,
   };
 
-  // Accumulate union of blend alphas for outside-region assertion.
   const unionAlpha: CoverageMask = {
     data: new Float32Array(original.width * original.height),
     width: original.width,
     height: original.height,
   };
 
-  for (const v of strategy.views) {
-    const entry = succeeded[v.index]!;
+  for (const { spec: v, entry } of toBlend) {
     const { data: resFile, error: resErr } = await admin.storage
       .from("panoramas")
-      .download(entry!.resultPath!);
+      .download(entry.resultPath!);
     if (resErr || !resFile) {
       return failJob(jobId, resErr?.message ?? `Missing view ${v.index}.`);
     }
@@ -684,39 +832,20 @@ async function runCompositeStep(options: {
       Buffer.from(await resFile.arrayBuffer()),
     );
 
-    let patch: RgbaImage;
-    let coverage: CoverageMask;
-    if (strategy.id === "D") {
-      const re = nadirCropToEquirect(staged, {
-        fovDegrees: 160,
-        size: strategy.size,
-        targetWidth: original.width,
-        targetHeight: original.height,
-      });
-      patch = re.image;
-      coverage = re.mask;
-    } else {
-      const re = perspectiveToEquirect(staged, {
-        yaw: v.yaw,
-        pitch: v.pitch,
-        fov: v.fov,
-        targetWidth: original.width,
-        targetHeight: original.height,
-      });
-      patch = re.image;
-      coverage = re.mask;
-    }
-
-    const faded = applyPitchFalloff(coverage);
+    const re = perspectiveToEquirect(staged, {
+      yaw: v.yaw,
+      pitch: v.pitch,
+      fov: v.fov,
+      targetWidth: original.width,
+      targetHeight: original.height,
+    });
+    const faded = applyPitchFalloff(re.mask);
     for (let i = 0; i < unionAlpha.data.length; i++) {
       unionAlpha.data[i] = Math.max(unionAlpha.data[i]!, faded.data[i]!);
     }
-
-    working = compositeWithBlendAlpha(working, patch, faded);
+    working = compositeWithBlendAlpha(working, re.image, faded);
   }
 
-  // Assert: outside the union of all view coverages (with pitch falloff),
-  // pixels match the pristine original.
   assertOutsideMaskUnchanged(original, working, unionAlpha);
 
   const candidateJpeg = await encodeRgbaToJpeg(working, 92);

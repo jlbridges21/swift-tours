@@ -55,13 +55,45 @@ export const falKontextProvider: StagingProvider = {
     await assertReachable("image_url", imageUrl);
 
     const prompt = (input.prompt?.trim() || DEFAULT_EDIT_PROMPT).slice(0, 2000);
-    const falInput = {
+    const aspectRatio = (
+      input.aspectRatio === "16:9" ||
+      input.aspectRatio === "21:9" ||
+      input.aspectRatio === "4:3" ||
+      input.aspectRatio === "3:2" ||
+      input.aspectRatio === "1:1" ||
+      input.aspectRatio === "2:3" ||
+      input.aspectRatio === "3:4" ||
+      input.aspectRatio === "9:16" ||
+      input.aspectRatio === "9:21"
+        ? input.aspectRatio
+        : "1:1"
+    ) as
+      | "21:9"
+      | "16:9"
+      | "4:3"
+      | "3:2"
+      | "1:1"
+      | "2:3"
+      | "3:4"
+      | "9:16"
+      | "9:21";
+    const falInput: {
+      prompt: string;
+      image_url: string;
+      output_format: "jpeg";
+      num_images: number;
+      guidance_scale: number;
+      enhance_prompt: boolean;
+      aspect_ratio: typeof aspectRatio;
+      seed?: number;
+    } = {
       prompt,
       image_url: imageUrl,
-      output_format: "jpeg" as const,
+      output_format: "jpeg",
       num_images: Math.min(4, Math.max(1, input.numImages ?? 1)),
       guidance_scale: 3.5,
       enhance_prompt: false,
+      aspect_ratio: aspectRatio,
       ...(typeof input.seed === "number" ? { seed: input.seed } : {}),
     };
 

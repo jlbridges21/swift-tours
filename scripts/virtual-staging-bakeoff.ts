@@ -1,10 +1,12 @@
 /**
- * View-strategy bake-off for virtual staging (A/B/C/D) on one real vacant room.
+ * View-strategy bake-off with layout plan (analysis → layout → per-view prompts).
  *
  *   npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts
+ *   npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts --plan-only
+ *   STRATEGY=A npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts
  *
- * Does not require migration 0019 — writes artifacts to storage under
- * {owner}/{tour}/staging-bakeoff/{runId}/…
+ * Defaults to strategy C. Set STRATEGY=A|B to compare. D is dropped.
+ * Prints room analysis + layout plan before any Kontext spend.
  */
 import Module from "node:module";
 
@@ -23,6 +25,7 @@ process.env.STAGING_ENABLED = "true";
 const DEFAULT_SCENE_ID = "2d4bb9fe-4a36-47e7-913b-cfab20550755";
 
 async function main() {
+  const planOnly = process.argv.includes("--plan-only");
   const { createClient } = await import("@supabase/supabase-js");
   const sharp = (await import("sharp")).default;
 
@@ -34,8 +37,6 @@ async function main() {
     assertOutsideMaskUnchanged,
     compositeWithBlendAlpha,
     equirectToPerspective,
-    nadirCrop,
-    nadirCropToEquirect,
     perspectiveToEquirect,
   } = await import("../lib/staging/projection");
   type CoverageMask = import("../lib/staging/projection").CoverageMask;
@@ -44,16 +45,29 @@ async function main() {
   const { falKontextProvider, FAL_KONTEXT_COST_CENTS } = await import(
     "../lib/staging/providers/fal-kontext"
   );
-  const { buildFallbackStagingPlan, composeRoomStagingPrompt } = await import(
+  const { buildFallbackStagingPlan } = await import(
     "../lib/staging/staging-plan-shared"
   );
   type StagingQuestionnaire =
     import("../lib/staging/staging-plan-shared").StagingQuestionnaire;
+  const {
+    collageContinuityInstruction,
+    composeViewStagingPrompt,
+    piecesForView,
+  } = await import("../lib/staging/layout-shared");
+  const { analyzeRoomViews } = await import("../lib/staging/room-analysis");
+  const { generateLayoutPlan } = await import("../lib/staging/layout-plan");
   const { getViewStrategy } = await import("../lib/staging/view-strategies");
   type ViewStrategyId = import("../lib/staging/view-strategies").ViewStrategyId;
   const { publicUrl } = await import("../lib/storage");
 
-  const STRATEGIES: ViewStrategyId[] = ["A", "B", "C", "D"];
+  const envStrategy = (process.env.STRATEGY || "C").toUpperCase();
+  const strategyIds: ViewStrategyId[] =
+    envStrategy === "ALL"
+      ? ["A", "B", "C"]
+      : envStrategy === "A" || envStrategy === "B" || envStrategy === "C"
+        ? [envStrategy]
+        : ["C"];
 
   const QUESTIONNAIRE: StagingQuestionnaire = {
     style: "Transitional",
@@ -67,22 +81,28 @@ async function main() {
   async function buildReferenceCollage(
     current: Buffer,
     previous: Buffer,
+    halfSize: number,
   ): Promise<Buffer> {
+    const height = halfSize;
+    const width = Math.round((height * 16) / 9);
+    const halfW = Math.floor(width / 2);
     const [l, r] = await Promise.all([
-      sharp(current).resize(768, 768, { fit: "fill" }).toBuffer(),
-      sharp(previous).resize(768, 768, { fit: "fill" }).toBuffer(),
+      sharp(current).resize(halfW, height, { fit: "fill" }).toBuffer(),
+      sharp(previous)
+        .resize(width - halfW, height, { fit: "fill" })
+        .toBuffer(),
     ]);
     return sharp({
       create: {
-        width: 1536,
-        height: 768,
+        width,
+        height,
         channels: 3,
         background: { r: 0, g: 0, b: 0 },
       },
     })
       .composite([
         { input: l, left: 0, top: 0 },
-        { input: r, left: 768, top: 0 },
+        { input: r, left: halfW, top: 0 },
       ])
       .jpeg({ quality: 90 })
       .toBuffer();
@@ -120,18 +140,13 @@ async function main() {
   plan.palette = "warm neutrals with muted sage accents";
   plan.style = "transitional";
 
-  const prompt = composeRoomStagingPrompt({
-    roomType: "living_room",
-    plan,
-    intensity: "fully",
-  });
+  const roomDescription = plan.rooms.living_room!;
 
-  console.log("\n========== COMPOSED PROMPT ==========");
-  console.log(prompt);
-  console.log("=====================================\n");
-  console.log("Scene:", scene.name, scene.id);
+  console.log("\nScene:", scene.name, scene.id);
   console.log("Tour:", tour.title, tour.id);
   console.log("Run:", runId);
+  console.log("Strategies:", strategyIds.join(", "));
+  console.log("Room description:", roomDescription);
 
   const { data: file, error: dlErr } = await sb.storage
     .from("panoramas")
@@ -153,84 +168,159 @@ async function main() {
     return { path, url: publicUrl(path) };
   }
 
-  await upload("prompt.txt", Buffer.from(prompt, "utf8"), "text/plain");
-
   type Row = {
     strategy: ViewStrategyId;
     views: number;
+    generated: number;
+    skipped: number;
     costCents: number;
     seconds: number;
     candidateUrl: string;
-    debugUrls: Record<string, string>;
+    resolutions: string[];
     error?: string;
   };
   const rows: Row[] = [];
 
-  for (const strategyId of STRATEGIES) {
+  for (const strategyId of strategyIds) {
     const strategy = getViewStrategy(strategyId);
     console.log(`\n── Strategy ${strategyId}: ${strategy.name} ──`);
+
+    // Analysis crops
+    const analysisUrls: string[] = [];
+    for (const v of strategy.views) {
+      const persp = equirectToPerspective(original, {
+        yaw: v.yaw,
+        pitch: v.pitch,
+        fov: v.fov,
+        width: Math.min(768, strategy.size),
+        height: Math.min(768, strategy.size),
+      });
+      const jpeg = await encodeRgbaToJpeg(persp, 85);
+      const up = await upload(
+        `${strategyId}/analysis-${v.index}.jpg`,
+        jpeg,
+        "image/jpeg",
+      );
+      analysisUrls.push(up.url);
+    }
+
+    const analysis = await analyzeRoomViews({
+      strategy: strategyId,
+      imageUrls: analysisUrls,
+    });
+    const layout = await generateLayoutPlan({
+      strategy: strategyId,
+      roomDescription,
+      analysis,
+    });
+
+    console.log("\n========== ROOM ANALYSIS ==========");
+    console.log(JSON.stringify(analysis, null, 2));
+    console.log("\n========== LAYOUT PLAN ==========");
+    console.log(JSON.stringify(layout, null, 2));
+
+    for (const v of layout.views) {
+      const prompt = composeViewStagingPrompt({
+        pieces: v.pieces,
+        globalDescriptors: plan.global_descriptors,
+      });
+      console.log(`\n── View ${v.index} prompt ──`);
+      console.log(prompt ?? "(SKIP — empty pieces; no model call)");
+    }
+
+    await upload(
+      `${strategyId}/analysis.json`,
+      Buffer.from(JSON.stringify(analysis, null, 2)),
+      "application/json",
+    );
+    await upload(
+      `${strategyId}/layout.json`,
+      Buffer.from(JSON.stringify(layout, null, 2)),
+      "application/json",
+    );
+
+    if (planOnly) {
+      console.log("\n--plan-only: stopping before Kontext generation.");
+      continue;
+    }
+
     const t0 = Date.now();
     let costCents = 0;
-    const debugUrls: Record<string, string> = {};
+    let generated = 0;
+    let skipped = 0;
+    const resolutions: string[] = [];
     const viewResults: { index: number; buf: Buffer }[] = [];
 
     try {
       for (const view of strategy.views) {
-        let cropJpeg: Buffer;
-        if (strategyId === "D") {
-          const crop = nadirCrop(original, {
-            fovDegrees: 160,
-            size: strategy.size,
-          });
-          cropJpeg = await encodeRgbaToJpeg(crop, 92);
-        } else {
-          const persp = equirectToPerspective(original, {
-            yaw: view.yaw,
-            pitch: view.pitch,
-            fov: view.fov,
-            width: strategy.size,
-            height: strategy.size,
-          });
-          cropJpeg = await encodeRgbaToJpeg(persp, 92);
+        const pieces = piecesForView(layout, view.index);
+        const viewPrompt = composeViewStagingPrompt({
+          pieces,
+          globalDescriptors: plan.global_descriptors,
+        });
+
+        if (!viewPrompt) {
+          skipped += 1;
+          console.log(`  view ${view.index}: SKIP (empty pieces)`);
+          resolutions.push(`${view.index}:skipped`);
+          continue;
         }
 
+        const persp = equirectToPerspective(original, {
+          yaw: view.yaw,
+          pitch: view.pitch,
+          fov: view.fov,
+          width: strategy.size,
+          height: strategy.size,
+        });
+        const cropJpeg = await encodeRgbaToJpeg(persp, 92);
         const srcUp = await upload(
           `${strategyId}/view-${view.index}-source.jpg`,
           cropJpeg,
           "image/jpeg",
         );
-        debugUrls[`view-${view.index}-source`] = srcUp.url;
 
         let submitBuf = cropJpeg;
         let usedCollage = false;
         const prior = viewResults[viewResults.length - 1];
         if (prior) {
-          submitBuf = await buildReferenceCollage(cropJpeg, prior.buf);
+          submitBuf = await buildReferenceCollage(
+            cropJpeg,
+            prior.buf,
+            strategy.size,
+          );
           usedCollage = true;
-          const col = await upload(
+          await upload(
             `${strategyId}/view-${view.index}-collage.jpg`,
             submitBuf,
             "image/jpeg",
           );
-          debugUrls[`view-${view.index}-collage`] = col.url;
         }
 
-        const stagedPrompt = usedCollage
-          ? `${prompt} The image is a side-by-side pair: furnish ONLY the LEFT half. The RIGHT half is an adjacent already-staged view — match the same furniture pieces, materials, and lighting in the overlap.`
-          : prompt;
+        let stagedPrompt = viewPrompt;
+        if (usedCollage) {
+          stagedPrompt = `${stagedPrompt}${collageContinuityInstruction()}`;
+        }
+
+        const imageUrl = usedCollage
+          ? publicUrl(
+              `${basePrefix}/${strategyId}/view-${view.index}-collage.jpg`,
+            )
+          : srcUp.url;
 
         console.log(
-          `  submitting view ${view.index + 1}/${strategy.views.length}…`,
+          `  submitting view ${view.index + 1}/${strategy.views.length}` +
+            (usedCollage ? " (collage 16:9)" : " (1:1)") +
+            "…",
         );
         const submitted = await falKontextProvider.submitInpaint({
           image: submitBuf,
           mask: Buffer.alloc(0),
-          imageUrl: usedCollage
-            ? debugUrls[`view-${view.index}-collage`]
-            : srcUp.url,
+          imageUrl,
           prompt: stagedPrompt,
           seed: seed + view.index * 17,
           numImages: 1,
+          aspectRatio: usedCollage ? "16:9" : "1:1",
         });
 
         let resultBuf: Buffer | null = null;
@@ -250,6 +340,11 @@ async function main() {
           break;
         }
         if (!resultBuf) throw new Error("Timed out waiting for provider");
+
+        const rawMeta = await sharp(resultBuf).metadata();
+        console.log(
+          `  raw provider output: ${rawMeta.width}×${rawMeta.height}`,
+        );
 
         if (usedCollage) {
           const meta = await sharp(resultBuf).metadata();
@@ -272,13 +367,18 @@ async function main() {
             .toBuffer();
         }
 
+        const finalMeta = await sharp(resultBuf).metadata();
+        resolutions.push(
+          `${view.index}:${rawMeta.width}x${rawMeta.height}→${finalMeta.width}x${finalMeta.height}`,
+        );
+
         const resUp = await upload(
           `${strategyId}/view-${view.index}-result.jpg`,
           resultBuf,
           "image/jpeg",
         );
-        debugUrls[`view-${view.index}-result`] = resUp.url;
         viewResults.push({ index: view.index, buf: resultBuf });
+        generated += 1;
         console.log(`  view ${view.index} done — ${resUp.url}`);
       }
 
@@ -294,35 +394,21 @@ async function main() {
       };
 
       for (const v of strategy.views) {
-        const entry = viewResults.find((r) => r.index === v.index)!;
+        const entry = viewResults.find((r) => r.index === v.index);
+        if (!entry) continue;
         const staged = await decodeImageToRgba(entry.buf);
-        let patch: RgbaImage;
-        let coverage: CoverageMask;
-        if (strategyId === "D") {
-          const re = nadirCropToEquirect(staged, {
-            fovDegrees: 160,
-            size: strategy.size,
-            targetWidth: original.width,
-            targetHeight: original.height,
-          });
-          patch = re.image;
-          coverage = re.mask;
-        } else {
-          const re = perspectiveToEquirect(staged, {
-            yaw: v.yaw,
-            pitch: v.pitch,
-            fov: v.fov,
-            targetWidth: original.width,
-            targetHeight: original.height,
-          });
-          patch = re.image;
-          coverage = re.mask;
-        }
-        const faded = applyPitchFalloff(coverage);
+        const re = perspectiveToEquirect(staged, {
+          yaw: v.yaw,
+          pitch: v.pitch,
+          fov: v.fov,
+          targetWidth: original.width,
+          targetHeight: original.height,
+        });
+        const faded = applyPitchFalloff(re.mask);
         for (let i = 0; i < unionAlpha.data.length; i++) {
           unionAlpha.data[i] = Math.max(unionAlpha.data[i]!, faded.data[i]!);
         }
-        working = compositeWithBlendAlpha(working, patch, faded);
+        working = compositeWithBlendAlpha(working, re.image, faded);
       }
 
       assertOutsideMaskUnchanged(original, working, unionAlpha);
@@ -332,20 +418,23 @@ async function main() {
         candidateJpeg,
         "image/jpeg",
       );
-      debugUrls.candidate = cand.url;
 
       const seconds = Math.round((Date.now() - t0) / 1000);
       rows.push({
         strategy: strategyId,
         views: strategy.views.length,
+        generated,
+        skipped,
         costCents,
         seconds,
         candidateUrl: cand.url,
-        debugUrls,
+        resolutions,
       });
       console.log(
-        `  DONE ${strategyId}: $${(costCents / 100).toFixed(2)} in ${seconds}s`,
+        `  DONE ${strategyId}: $${(costCents / 100).toFixed(2)} in ${seconds}s` +
+          ` (${generated} gen, ${skipped} skip)`,
       );
+      console.log(`  resolutions: ${resolutions.join(", ")}`);
       console.log(`  candidate: ${cand.url}`);
     } catch (err) {
       const seconds = Math.round((Date.now() - t0) / 1000);
@@ -354,38 +443,34 @@ async function main() {
       rows.push({
         strategy: strategyId,
         views: strategy.views.length,
+        generated,
+        skipped,
         costCents,
         seconds,
         candidateUrl: "",
-        debugUrls,
+        resolutions,
         error: message,
       });
     }
   }
 
-  const summary = {
-    sceneId: scene.id,
-    sceneName: scene.name,
-    prompt,
-    seed,
-    runId,
-    rows,
-  };
-  const sumUp = await upload(
-    "summary.json",
-    Buffer.from(JSON.stringify(summary, null, 2)),
-    "application/json",
-  );
-
-  console.log("\n========== BAKE-OFF TABLE ==========");
-  console.log("| Strat | Views | Cost | Time | Candidate |");
-  console.log("|---|---|---|---|---|");
-  for (const r of rows) {
-    console.log(
-      `| ${r.strategy} | ${r.views} | $${(r.costCents / 100).toFixed(2)} | ${r.seconds}s | ${r.candidateUrl || r.error || "—"} |`,
+  if (!planOnly && rows.length > 0) {
+    const summary = { sceneId: scene.id, sceneName: scene.name, runId, rows };
+    const sumUp = await upload(
+      "summary.json",
+      Buffer.from(JSON.stringify(summary, null, 2)),
+      "application/json",
     );
+    console.log("\n========== BAKE-OFF TABLE ==========");
+    console.log("| Strat | Gen/Skip | Cost | Time | Candidate |");
+    console.log("|---|---|---|---|---|");
+    for (const r of rows) {
+      console.log(
+        `| ${r.strategy} | ${r.generated}/${r.skipped} | $${(r.costCents / 100).toFixed(2)} | ${r.seconds}s | ${r.candidateUrl || r.error || "—"} |`,
+      );
+    }
+    console.log("Summary:", sumUp.url);
   }
-  console.log("Summary:", sumUp.url);
 }
 
 main().catch((err) => {

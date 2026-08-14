@@ -16,6 +16,11 @@ export type InpaintInput = {
    */
   imageUrl?: string;
   maskUrl?: string;
+  /**
+   * Kontext accepts aspect_ratio enums (e.g. "1:1", "2:1").
+   * No explicit width/height on fal-ai/flux-pro/kontext.
+   */
+  aspectRatio?: string;
 };
 
 export type InpaintSubmitResult = {

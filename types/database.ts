@@ -3,8 +3,9 @@
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  *
- * After 0019_virtual_staging.sql, regenerate so room_type / staging_plan /
- * staging_views / job step columns stay in sync.
+ * After 0019_virtual_staging.sql / 0020_staging_layout.sql, regenerate so
+ * room_type / staging_plan / staging_views / staging_room_analysis /
+ * staging_layout / job step columns stay in sync.
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  */
@@ -168,6 +169,8 @@ export type Database = {
           room_type: string | null;
           staging_candidate_path: string | null;
           staging_candidate_job_id: string | null;
+          staging_room_analysis: Json | null;
+          staging_layout: Json | null;
           adjust_brightness: number;
           adjust_contrast: number;
           adjust_saturation: number;
@@ -202,6 +205,8 @@ export type Database = {
           room_type?: string | null;
           staging_candidate_path?: string | null;
           staging_candidate_job_id?: string | null;
+          staging_room_analysis?: Json | null;
+          staging_layout?: Json | null;
           adjust_brightness?: number;
           adjust_contrast?: number;
           adjust_saturation?: number;
@@ -236,6 +241,8 @@ export type Database = {
           room_type?: string | null;
           staging_candidate_path?: string | null;
           staging_candidate_job_id?: string | null;
+          staging_room_analysis?: Json | null;
+          staging_layout?: Json | null;
           adjust_brightness?: number;
           adjust_contrast?: number;
           adjust_saturation?: number;
