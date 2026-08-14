@@ -62,7 +62,6 @@ async function main() {
     forceSplitLayout,
     formatPieceConservationLog,
     piecesForView,
-    splitRoomDescriptionIntoPieces,
     viewImageSeed,
   } = await import("../lib/staging/layout-shared");
   type StagingLayout = import("../lib/staging/layout-shared").StagingLayout;
@@ -128,9 +127,16 @@ async function main() {
     typeof tour.staging_seed === "number" ? tour.staging_seed : 481923;
   const roomKey = scene.room_key || DEFAULT_ROOM_KEY;
   const plan = buildFallbackStagingPlan(QUESTIONNAIRE, seed);
+  const bakeoffPieces = [
+    "a charcoal three-seat linen sofa",
+    "two cream armchairs",
+    "a natural jute area rug",
+    "a walnut coffee table with brass legs",
+    "a large abstract canvas in sage and cream above the sofa",
+    "a tall fiddle-leaf fig in a woven basket",
+  ];
   plan.rooms = {
-    [roomKey]:
-      "a charcoal three-seat linen sofa, two cream armchairs, a natural jute area rug, a walnut coffee table with brass legs, a large abstract canvas in sage and cream above the sofa, a tall fiddle-leaf fig in a woven basket",
+    [roomKey]: { pieces: bakeoffPieces },
   };
   plan.room_types = { [roomKey]: "living_room" };
   plan.global_descriptors =
@@ -138,7 +144,7 @@ async function main() {
   plan.palette = "warm neutrals with muted sage accents";
   plan.style = "transitional";
 
-  const roomDescription = plan.rooms[roomKey]!;
+  const canonicalPieces = bakeoffPieces;
 
   console.log("\nScene:", scene.name, scene.id);
   console.log("Tour:", tour.title, tour.id);
@@ -146,7 +152,7 @@ async function main() {
   console.log("tour seed:", seed, "→ view seeds:", [0, 1, 2].map((i) => viewImageSeed(seed, i)).join(", "));
   console.log("Run:", runId);
   console.log("Strategies:", strategyIds.join(", "));
-  console.log("Room description:", roomDescription);
+  console.log("Room pieces:", JSON.stringify(canonicalPieces, null, 2));
 
   try {
     const order = await computeTourStagingOrder(scene.tour_id);
@@ -245,8 +251,9 @@ async function main() {
       });
       layout = await generateLayoutPlan({
         strategy: strategyId,
-        roomDescription,
+        pieces: canonicalPieces,
         analysis,
+        roomKey,
       });
 
       // Persist so a second run reuses without regenerating.
@@ -272,20 +279,21 @@ async function main() {
     }
 
     if (forceSplit) {
-      // Rebuild from the bake-off room description contract — never from a
-      // possibly incomplete stored layout's piece arrays.
+      // Rebuild from canonical pieces — never from a possibly incomplete layout.
       layout = forceSplitLayout(
-        { ...layout, source_room_description: roomDescription },
+        { ...layout, source_pieces: canonicalPieces },
         analysis,
       );
       console.info("\n========== --force-split (before generate) ==========");
       console.info(JSON.stringify(layout.views, null, 2));
     }
 
-    const canonical = splitRoomDescriptionIntoPieces(roomDescription);
-    assertPieceConservation(canonical, layout);
+    assertPieceConservation(canonicalPieces, layout, {
+      roomKey,
+      raw: { source_pieces: canonicalPieces },
+    });
     console.log("\n========== PIECE CONSERVATION ==========");
-    console.log(formatPieceConservationLog(canonical, layout));
+    console.log(formatPieceConservationLog(canonicalPieces, layout));
 
     console.log("\n========== ROOM ANALYSIS ==========");
     console.log(JSON.stringify(analysis, null, 2));

@@ -20,7 +20,6 @@ import {
   composeViewStagingPrompt,
   formatPieceConservationLog,
   piecesForView,
-  splitRoomDescriptionIntoPieces,
   viewImageSeed,
   type StagingLayout,
   type StagingRoomAnalysis,
@@ -29,11 +28,16 @@ import {
   findAdjacentRoomCollageRef,
   loadCollageRightHalf,
 } from "@/lib/staging/cross-scene";
-import { ensureFrozenRoomDescription } from "@/lib/staging/generate-plan";
+import {
+  ensureFrozenRoomDescription,
+  normalizeStagingPlan,
+} from "@/lib/staging/generate-plan";
 import { getStagingProvider } from "@/lib/staging/providers";
 import { FAL_KONTEXT_COST_CENTS } from "@/lib/staging/providers/fal-kontext";
 import { analyzeRoomViews } from "@/lib/staging/room-analysis";
 import {
+  getRoomPieces,
+  roomPlanNeedsRegeneration,
   type RoomType,
   type StagingIntensity,
   type StagingPlan,
@@ -281,6 +285,7 @@ export async function processStageRoomJob(job: {
       "Tour has no locked staging plan — complete the questionnaire first.",
     );
   }
+  plan = normalizeStagingPlan(plan);
 
   const strategyId = (job.params.strategy as ViewStrategyId) || "C";
   const strategy = getViewStrategy(strategyId);
@@ -320,15 +325,34 @@ export async function processStageRoomJob(job: {
       .eq("id", scene.id);
   }
 
+  // Legacy prose plans must be regenerated in the editor — do not parse.
+  if (roomPlanNeedsRegeneration(plan.rooms[roomKey])) {
+    return failJob(
+      job.id,
+      `Room "${roomKey}" has a legacy prose staging plan that must be regenerated before staging. Open Virtual staging → Regenerate room plan.`,
+    );
+  }
+
   plan = await ensureFrozenRoomDescription({ plan, roomKey, roomType });
   await admin
     .from("tours")
     .update({ staging_plan: plan as unknown as Json })
     .eq("id", job.tour_id);
 
-  const roomDescription =
-    plan.rooms[roomKey]?.trim() ||
-    `tasteful furnishings appropriate for a ${roomType.replace(/_/g, " ")}`;
+  if (roomPlanNeedsRegeneration(plan.rooms[roomKey])) {
+    return failJob(
+      job.id,
+      `Room "${roomKey}" still needs a structured pieces plan before staging.`,
+    );
+  }
+
+  const canonicalPieces = getRoomPieces(plan, roomKey);
+  if (!canonicalPieces?.length) {
+    return failJob(
+      job.id,
+      `Room "${roomKey}" has no frozen pieces — regenerate the room plan.`,
+    );
+  }
 
   const totalSteps = strategy.views.length + 1; // views + composite
   let step = typeof job.step === "number" ? job.step : 0;
@@ -406,8 +430,9 @@ export async function processStageRoomJob(job: {
         });
         layout = await generateLayoutPlan({
           strategy: strategyId,
-          roomDescription,
+          pieces: canonicalPieces,
           analysis,
+          roomKey,
         });
 
         await admin
@@ -432,11 +457,16 @@ export async function processStageRoomJob(job: {
       }
 
       {
-        const canonical = splitRoomDescriptionIntoPieces(roomDescription);
-        assertPieceConservation(canonical, layout);
+        assertPieceConservation(canonicalPieces, layout, {
+          roomKey,
+          raw: {
+            source_pieces: canonicalPieces,
+            room_entry: plan.rooms[roomKey],
+          },
+        });
         console.info(
           "[stage_room] piece conservation:\n" +
-            formatPieceConservationLog(canonical, layout),
+            formatPieceConservationLog(canonicalPieces, layout),
         );
       }
 
@@ -458,7 +488,7 @@ export async function processStageRoomJob(job: {
             layout,
             analysis,
             globalDescriptors: plan.global_descriptors,
-            roomDescription,
+            pieces: canonicalPieces,
             imageSeedFormula: "tourSeed + viewIndex * 17",
             progressiveComposite: true,
           } as Json,

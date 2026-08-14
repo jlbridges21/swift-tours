@@ -9,6 +9,7 @@ import {
   getTourStagingOrder,
   getTourStagingSpendCents,
   regenerateSceneStagingLayout,
+  regenerateRoomStagingPieces,
   revertSceneStaged,
   saveTourStagingPlan,
   updateSceneRoomStaging,
@@ -25,6 +26,8 @@ import {
   STAGING_PALETTES,
   STAGING_STYLES,
   composeRoomStagingPrompt,
+  normalizeStagingPlanRooms,
+  roomPlanNeedsRegeneration,
   type RoomType,
   type StagingIntensity,
   type StagingPlan,
@@ -80,6 +83,16 @@ function isStagingPlan(value: unknown): value is StagingPlan {
     typeof p.rooms === "object" &&
     p.rooms !== null
   );
+}
+
+function normalizePlanForUi(plan: StagingPlan): StagingPlan {
+  return {
+    ...plan,
+    rooms: normalizeStagingPlanRooms(
+      plan.rooms as unknown as Record<string, unknown>,
+    ),
+    room_types: { ...(plan.room_types ?? {}) },
+  };
 }
 
 function isOneOf<T extends string>(
@@ -176,7 +189,9 @@ export function VirtualStagingPanel({
   const active =
     scenes.find((s) => s.id === activeSceneId) ?? scenes[0] ?? null;
 
-  const plan = stagingPlan && isStagingPlan(stagingPlan) ? stagingPlan : null;
+  const plan = stagingPlan && isStagingPlan(stagingPlan)
+    ? normalizePlanForUi(stagingPlan)
+    : null;
 
   const roomType = useMemo<RoomType>(() => {
     const rt = active?.room_type;
@@ -187,6 +202,10 @@ export function VirtualStagingPanel({
   }, [active?.room_type]);
 
   const roomKey = active?.room_key ?? null;
+
+  const roomNeedsRegen = Boolean(
+    roomKey && plan && roomPlanNeedsRegeneration(plan.rooms[roomKey]),
+  );
 
   const existingRoomKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -391,6 +410,27 @@ export function VirtualStagingPanel({
         return;
       }
       toast.success("Layout cleared — next stage will regenerate.");
+    });
+  }
+
+  function handleRegenerateRoomPieces() {
+    if (!roomKey || !plan) return;
+    const ok = window.confirm(
+      "Regenerate this room's furniture piece list? Style, palette, and seed stay the same. Scenes already staged from the old list will no longer match the new pieces.",
+    );
+    if (!ok) return;
+    startTransition(async () => {
+      const result = await regenerateRoomStagingPieces(
+        tourId,
+        roomKey,
+        roomType,
+      );
+      if (result.error || !result.plan) {
+        toast.error(result.error ?? "Failed to regenerate room plan.");
+        return;
+      }
+      onPlanSaved(result.plan);
+      toast.success("Room plan regenerated with structured pieces.");
     });
   }
 
@@ -852,6 +892,27 @@ export function VirtualStagingPanel({
         </p>
       </div>
 
+      {roomNeedsRegen ? (
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
+          <p className="text-[11px] font-medium text-amber-900 dark:text-amber-200">
+            This room&apos;s staging plan needs to be regenerated before
+            staging.
+          </p>
+          <p className="text-[10px] text-muted-foreground">
+            It still has a legacy prose description. Regeneration keeps this
+            tour&apos;s style, palette, and seed.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !roomKey}
+            onClick={handleRegenerateRoomPieces}
+          >
+            Regenerate room plan
+          </Button>
+        </div>
+      ) : null}
+
       <fieldset className="space-y-1">
         <Label className="text-xs">Intensity</Label>
         {(
@@ -927,7 +988,7 @@ export function VirtualStagingPanel({
         <Button
           type="button"
           size="sm"
-          disabled={busy || !active || intensity === "empty"}
+          disabled={busy || !active || intensity === "empty" || roomNeedsRegen}
           onClick={handleStageRoom}
         >
           Virtually stage this room

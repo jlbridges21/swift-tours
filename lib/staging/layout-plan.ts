@@ -9,7 +9,6 @@ import {
   formatPieceConservationLog,
   LayoutPieceConservationError,
   matchCanonicalPiece,
-  splitRoomDescriptionIntoPieces,
   type StagingLayout,
   type StagingRoomAnalysis,
   type LayoutViewAssignment,
@@ -27,16 +26,21 @@ function configureFal(): boolean {
 }
 
 /**
- * Assign every furniture piece from the frozen room description to exactly one view.
+ * Assign every furniture piece from the frozen pieces array to exactly one view.
  * Canonical piece strings are the contract — the layout stores those exact strings only.
  */
 export async function generateLayoutPlan(options: {
   strategy: ViewStrategyId;
-  roomDescription: string;
+  pieces: string[];
   analysis: StagingRoomAnalysis;
+  roomKey?: string;
 }): Promise<StagingLayout> {
-  const canonical = splitRoomDescriptionIntoPieces(options.roomDescription);
-  const fallback = buildFallbackLayoutPlan(options);
+  const canonical = [...options.pieces];
+  const fallback = buildFallbackLayoutPlan({
+    strategy: options.strategy,
+    pieces: canonical,
+    analysis: options.analysis,
+  });
 
   if (canonical.length === 0) return fallback;
   if (!configureFal()) {
@@ -118,7 +122,6 @@ Rules:
       const capacity = options.analysis.views[index]?.capacity;
       if (capacity === "clear") continue;
 
-      // Prefer piece_indices (canonical contract).
       const indices = Array.isArray(row.piece_indices)
         ? row.piece_indices
             .map((n) =>
@@ -137,7 +140,6 @@ Rules:
         continue;
       }
 
-      // Legacy: string pieces → map onto unused canonical strings only.
       const list = Array.isArray(row.pieces)
         ? row.pieces.filter((p): p is string => typeof p === "string")
         : [];
@@ -152,12 +154,14 @@ Rules:
     const layout: StagingLayout = {
       strategy: options.strategy,
       views: assignments,
-      source_room_description: options.roomDescription,
+      source_pieces: canonical,
       planned_at: new Date().toISOString(),
     };
 
-    // Incomplete / wrong LLM assignment → THROW (never silent repair).
-    assertPieceConservation(canonical, layout);
+    assertPieceConservation(canonical, layout, {
+      roomKey: options.roomKey,
+      raw: { source_pieces: canonical, llm_views: parsed.views },
+    });
 
     const coalesced = coalesceRelatedPieces(layout, canonical);
     console.info(
@@ -166,7 +170,6 @@ Rules:
     );
     return coalesced;
   } catch (err) {
-    // Never swallow conservation failures.
     if (err instanceof LayoutPieceConservationError) throw err;
     console.error("[layout-plan] generate failed, using fallback", err);
     console.info(

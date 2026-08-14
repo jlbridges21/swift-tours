@@ -37,8 +37,8 @@ export type LayoutViewAssignment = {
 export type StagingLayout = {
   strategy: ViewStrategyId;
   views: LayoutViewAssignment[];
-  /** Original room description sentence the pieces were drawn from. */
-  source_room_description: string;
+  /** Canonical furniture list — single source of truth for conservation. */
+  source_pieces: string[];
   planned_at: string;
 };
 
@@ -46,13 +46,18 @@ export class LayoutPieceConservationError extends Error {
   readonly missing: string[];
   readonly duplicated: string[];
   readonly unexpected: string[];
+  readonly roomKey?: string;
+  readonly raw?: unknown;
 
   constructor(options: {
     missing: string[];
     duplicated: string[];
     unexpected: string[];
+    roomKey?: string;
+    raw?: unknown;
   }) {
     const parts: string[] = [];
+    if (options.roomKey) parts.push(`room_key=${options.roomKey}`);
     if (options.missing.length) {
       parts.push(`missing: ${JSON.stringify(options.missing)}`);
     }
@@ -62,6 +67,9 @@ export class LayoutPieceConservationError extends Error {
     if (options.unexpected.length) {
       parts.push(`unexpected: ${JSON.stringify(options.unexpected)}`);
     }
+    if (options.raw !== undefined) {
+      parts.push(`raw: ${JSON.stringify(options.raw)}`);
+    }
     super(
       `Layout piece conservation violated — every canonical piece must appear exactly once. ${parts.join("; ")}`,
     );
@@ -69,28 +77,25 @@ export class LayoutPieceConservationError extends Error {
     this.missing = options.missing;
     this.duplicated = options.duplicated;
     this.unexpected = options.unexpected;
+    this.roomKey = options.roomKey;
+    this.raw = options.raw;
   }
 }
 
 /**
- * Split a locked room description into discrete furniture pieces.
- * Prefer comma-separated clauses; keep each piece concrete.
- * This list is the contract — parse once and conserve thereafter.
+ * Resolve the canonical piece contract from a layout.
+ * Prefers source_pieces; never parses prose.
  */
-export function splitRoomDescriptionIntoPieces(description: string): string[] {
-  const cleaned = description.replace(/\s+/g, " ").trim();
-  if (!cleaned) return [];
-
-  // Split on commas / " and " that introduce new articles.
-  const parts = cleaned
-    .split(/,\s*(?:and\s+)?|\s+and\s+(?=a\s|an\s|two\s|three\s|the\s)/i)
-    .map((p) => p.trim().replace(/^and\s+/i, "").replace(/\.$/, ""))
-    .filter((p) => p.length > 3);
-
-  if (parts.length >= 2) return parts;
-
-  // Fallback: whole sentence as one piece.
-  return [cleaned.replace(/\.$/, "")];
+export function layoutCanonicalPieces(layout: StagingLayout): string[] {
+  if (Array.isArray(layout.source_pieces) && layout.source_pieces.length > 0) {
+    return layout.source_pieces;
+  }
+  throw new LayoutPieceConservationError({
+    missing: ["(no source_pieces on layout)"],
+    duplicated: [],
+    unexpected: [],
+    raw: layout,
+  });
 }
 
 /**
@@ -100,6 +105,7 @@ export function splitRoomDescriptionIntoPieces(description: string): string[] {
 export function assertPieceConservation(
   canonical: string[],
   layout: StagingLayout,
+  context?: { roomKey?: string; raw?: unknown },
 ): void {
   const counts = new Map<string, number>();
   for (const v of layout.views) {
@@ -119,7 +125,16 @@ export function assertPieceConservation(
   const unexpected = [...counts.keys()];
 
   if (missing.length || duplicated.length || unexpected.length) {
-    throw new LayoutPieceConservationError({ missing, duplicated, unexpected });
+    throw new LayoutPieceConservationError({
+      missing,
+      duplicated,
+      unexpected,
+      roomKey: context?.roomKey,
+      raw: context?.raw ?? {
+        source_pieces: layout.source_pieces,
+        views: layout.views,
+      },
+    });
   }
 }
 
@@ -399,8 +414,7 @@ export function coalesceRelatedPieces(
   layout: StagingLayout,
   canonical?: string[],
 ): StagingLayout {
-  const contract =
-    canonical ?? splitRoomDescriptionIntoPieces(layout.source_room_description);
+  const contract = canonical ?? layoutCanonicalPieces(layout);
 
   const pieceToView = new Map<string, number>();
   for (const v of layout.views) {
@@ -447,16 +461,17 @@ export function coalesceRelatedPieces(
 
 /**
  * Force-split for bake-off: two coherent groupings across TWO DISTINCT views.
- * Always rebuilds from the canonical source description (never from a broken layout).
+ * Always rebuilds from layout.source_pieces (never from view arrays alone).
  * Related pieces stay together: sofa + canvas + rug + coffee table vs armchairs + fig.
  */
 export function forceSplitLayout(
   layout: StagingLayout,
   analysis?: StagingRoomAnalysis,
 ): StagingLayout {
-  const canonical = splitRoomDescriptionIntoPieces(
-    layout.source_room_description,
-  );
+  const canonical =
+    layout.source_pieces?.length > 0
+      ? [...layout.source_pieces]
+      : layoutCanonicalPieces(layout);
   if (canonical.length < 2) {
     throw new Error(
       `--force-split requires at least 2 canonical pieces; got ${canonical.length}`,
@@ -521,6 +536,7 @@ export function forceSplitLayout(
     {
       ...layout,
       views: nextViews,
+      source_pieces: canonical,
       planned_at: new Date().toISOString(),
     },
     canonical,
@@ -533,10 +549,11 @@ export function forceSplitLayout(
  */
 export function buildFallbackLayoutPlan(options: {
   strategy: ViewStrategyId;
-  roomDescription: string;
+  /** Canonical pieces — already structured; never prose. */
+  pieces: string[];
   analysis: StagingRoomAnalysis;
 }): StagingLayout {
-  const canonical = splitRoomDescriptionIntoPieces(options.roomDescription);
+  const canonical = [...options.pieces];
   const views = options.analysis.views.map((v) => ({
     index: v.index,
     pieces: [] as string[],
@@ -581,7 +598,7 @@ export function buildFallbackLayoutPlan(options: {
     {
       strategy: options.strategy,
       views,
-      source_room_description: options.roomDescription,
+      source_pieces: canonical,
       planned_at: new Date().toISOString(),
     },
     canonical,

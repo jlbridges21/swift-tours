@@ -2365,11 +2365,13 @@ export async function updateSceneRoomStaging(
   }
 
   if (plan && typeof plan === "object") {
-    const { ensureFrozenRoomDescription } = await import(
-      "@/lib/staging/generate-plan"
-    );
-    // Normalize legacy plans missing room_types.
+    const {
+      ensureFrozenRoomDescription,
+      normalizeStagingPlan,
+    } = await import("@/lib/staging/generate-plan");
+    // Normalize legacy plans missing room_types / string rooms.
     if (!plan.room_types) plan = { ...plan, room_types: {} };
+    plan = normalizeStagingPlan(plan);
     plan = await ensureFrozenRoomDescription({
       plan,
       roomKey,
@@ -2413,6 +2415,61 @@ export async function regenerateSceneStagingLayout(
 
   revalidateTourCaches(owned.scene.tour_id, owned.tour.slug);
   return {};
+}
+
+/**
+ * Regenerate structured pieces for a room_key.
+ * Preserves tour style / palette / seed. Clears layouts for scenes in that room.
+ */
+export async function regenerateRoomStagingPieces(
+  tourId: string,
+  roomKey: string,
+  roomType: RoomType,
+): Promise<{ plan?: StagingPlan; error?: string }> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { data: tourRow, error: tourErr } = await owned.supabase
+    .from("tours")
+    .select("staging_plan, staging_seed")
+    .eq("id", tourId)
+    .maybeSingle();
+  if (tourErr) return { error: tourErr.message };
+  if (!tourRow?.staging_plan) {
+    return { error: "No locked staging plan — save the questionnaire first." };
+  }
+
+  let plan = tourRow.staging_plan as unknown as StagingPlan;
+  const { regenerateRoomPieces, normalizeStagingPlan } = await import(
+    "@/lib/staging/generate-plan"
+  );
+  plan = normalizeStagingPlan(plan);
+  plan = await regenerateRoomPieces({
+    plan,
+    roomKey,
+    roomType,
+  });
+
+  const { error: planErr } = await owned.supabase
+    .from("tours")
+    .update({ staging_plan: plan as unknown as Json })
+    .eq("id", tourId);
+  if (planErr) return { error: planErr.message };
+
+  // Layouts built from the old (or prose) list are invalid.
+  await owned.supabase
+    .from("scenes")
+    .update({
+      staging_room_analysis: null,
+      staging_layout: null,
+    })
+    .eq("tour_id", tourId)
+    .eq("room_key", roomKey);
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  return { plan };
 }
 
 export async function getTourStagingOrder(
