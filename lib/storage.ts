@@ -144,7 +144,7 @@ export function stagingCandidateCompatPath(
   return `${stagingWorkDir(userId, tourId, jobId)}/candidate-${index}_4k.jpg`;
 }
 
-/** Per-view source crop for a stage_room job. */
+/** Per-view source crop (legacy room-staging job work; kept for path cleanup). */
 export function stagingViewSourcePath(
   userId: string,
   tourId: string,
@@ -154,7 +154,7 @@ export function stagingViewSourcePath(
   return `${stagingWorkDir(userId, tourId, jobId)}/views/${viewIndex}-source.jpg`;
 }
 
-/** Per-view model output for a stage_room job. */
+/** Per-view model output (legacy room-staging job work; kept for path cleanup). */
 export function stagingViewResultPath(
   userId: string,
   tourId: string,

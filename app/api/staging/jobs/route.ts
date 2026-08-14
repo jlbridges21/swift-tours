@@ -2,26 +2,19 @@ import { NextResponse } from "next/server";
 
 import {
   requireOwnedTour,
-  requireUser,
   stagingError,
 } from "@/lib/staging/auth";
 import {
   isStagingEnabled,
-  stagingMaxCostCentsPerJob,
   stagingMaxJobsPerTour,
-  stagingMaxSpendCentsPerTour,
 } from "@/lib/staging/providers";
-import {
-  estimateStrategyCostCents,
-  type ViewStrategyId,
-} from "@/lib/staging/view-strategies";
 import type { Json } from "@/types/database";
 
 export const runtime = "nodejs";
 /** Create is a light DB insert — keep short. */
 export const maxDuration = 30;
 
-const KIND_RE = /^(nadir_fill|stage_room)$/;
+const KIND_RE = /^nadir_fill$/;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -52,7 +45,7 @@ function asJsonObject(value: unknown): Record<string, Json> {
 
 /**
  * POST /api/staging/jobs
- * Authenticated owner creates a queued staging job.
+ * Authenticated owner creates a queued staging job (nadir_fill).
  */
 export async function POST(request: Request) {
   if (!isStagingEnabled()) {
@@ -116,7 +109,7 @@ export async function POST(request: Request) {
     return stagingError(
       400,
       "BAD_REQUEST",
-      "Field “kind” must be nadir_fill or stage_room.",
+      "Field “kind” must be nadir_fill.",
     );
   }
 
@@ -151,7 +144,6 @@ export async function POST(request: Request) {
     .eq("tour_id", tourId);
 
   if (countError) {
-    // Likely migration not applied (unknown column) or RLS.
     if (process.env.NODE_ENV === "development") {
       console.info("[staging/jobs] count error", countError);
     }
@@ -185,62 +177,6 @@ export async function POST(request: Request) {
     );
   }
 
-  if (kind === "stage_room") {
-    const { data: tourRow, error: tourErr } = await owned.supabase
-      .from("tours")
-      .select("staging_plan")
-      .eq("id", tourId)
-      .maybeSingle();
-    if (tourErr) {
-      return stagingError(500, "INTERNAL", tourErr.message);
-    }
-    const plan = tourRow?.staging_plan;
-    if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
-      return stagingError(
-        400,
-        "BAD_REQUEST",
-        "Complete the tour staging plan questionnaire before staging a room.",
-      );
-    }
-
-    const strategy =
-      typeof params.strategy === "string" ? params.strategy : "A";
-    const estimated = estimateStrategyCostCents(
-      (["A", "B", "C", "D"].includes(strategy)
-        ? strategy
-        : "A") as ViewStrategyId,
-    );
-    const perJobCap = stagingMaxCostCentsPerJob("stage_room");
-    if (estimated > perJobCap) {
-      return stagingError(
-        429,
-        "RATE_LIMIT",
-        `This strategy (~$${(estimated / 100).toFixed(2)}) exceeds the per-job cap ($${(perJobCap / 100).toFixed(2)}).`,
-      );
-    }
-
-    const { data: spendRows, error: spendErr } = await owned.supabase
-      .from("staging_jobs")
-      .select("cost_cents")
-      .eq("tour_id", tourId)
-      .in("status", ["succeeded", "processing", "queued"]);
-    if (spendErr) {
-      return stagingError(500, "INTERNAL", spendErr.message);
-    }
-    const spent = (spendRows ?? []).reduce(
-      (sum, row) => sum + (row.cost_cents ?? 0),
-      0,
-    );
-    const tourCap = stagingMaxSpendCentsPerTour();
-    if (spent + estimated > tourCap) {
-      return stagingError(
-        429,
-        "RATE_LIMIT",
-        `Tour staging spend would exceed the cap ($${(tourCap / 100).toFixed(2)}).`,
-      );
-    }
-  }
-
   const { data: job, error: insertError } = await owned.supabase
     .from("staging_jobs")
     .insert({
@@ -266,17 +202,5 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ job }, { status: 201 });
-}
-
-export async function GET() {
-  const auth = await requireUser();
-  if (!auth.user) {
-    return stagingError(401, "UNAUTHORIZED", "Unauthorized.");
-  }
-  return stagingError(
-    405,
-    "BAD_REQUEST",
-    "Use GET /api/staging/jobs/[id].",
-  );
+  return NextResponse.json({ job });
 }

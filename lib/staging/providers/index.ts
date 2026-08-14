@@ -77,16 +77,15 @@ export function stagingMaxSpendCentsPerTour(): number {
 }
 
 /**
- * Per-job cost cap (cents). stage_room defaults higher because one scene is
- * several model calls; override with STAGING_MAX_COST_CENTS_PER_JOB.
+ * Per-job cost cap (cents). Override with STAGING_MAX_COST_CENTS_PER_JOB.
  */
-export function stagingMaxCostCentsPerJob(kind: string): number {
+export function stagingMaxCostCentsPerJob(_kind?: string): number {
   const raw = process.env.STAGING_MAX_COST_CENTS_PER_JOB;
   if (raw) {
     const n = Number.parseInt(raw, 10);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  return kind === "stage_room" ? 50 : 20;
+  return 20;
 }
 
 /** Default AI provider for new jobs when the client does not specify. */

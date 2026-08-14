@@ -58,7 +58,7 @@ export type ScenePanoramaSource = SceneVariantPaths & {
 };
 
 /**
- * Choose which variant to show (staged → cleaned → original), then full-res
+ * Choose which variant to show (cleaned → original), then full-res
  * vs 4k compat based on device GPU limits.
  *
  * CRITICAL: Call this synchronously when building VirtualTour nodes — never
@@ -67,7 +67,7 @@ export type ScenePanoramaSource = SceneVariantPaths & {
 export function resolvePanoramaPath(
   scene: ScenePanoramaSource,
   maxTextureSize: number = getMaxTextureSize(),
-): { path: string; tier: PanoramaUrlTier; variant: "staged" | "cleaned" | "original" } {
+): { path: string; tier: PanoramaUrlTier; variant: "cleaned" | "original" } {
   const variant = resolveViewerVariant(scene);
   const width = scene.width ?? 0;
   if (width > maxTextureSize && variant.compatPath) {

@@ -4,16 +4,11 @@ import { decodeImageToRgba, encodeRgbaToJpeg } from "@/lib/staging/image-codec";
 import {
   JOB_ABSOLUTE_TIMEOUT_MS,
   NADIR_FILL_CROP_SIZE,
-  STAGE_ROOM_ABSOLUTE_TIMEOUT_MS,
   WORKER_LEASE_MS,
   isStagingDebugEnabled,
   type NadirFillJobResult,
 } from "@/lib/staging/process-job-constants";
 import { processNadirFillJob } from "@/lib/staging/process-nadir-fill";
-import {
-  processStageRoomJob,
-  type StageRoomJobResult,
-} from "@/lib/staging/process-stage-room";
 import { roundTripNoEdit, type DiffStats } from "@/lib/staging/projection";
 import { estimateFluxFillCostCents } from "@/lib/staging/providers/fal-flux-fill";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -31,7 +26,6 @@ export {
   NADIR_FILL_FOV_DEGREES,
   NADIR_FILL_MASK_FEATHER_PX,
   NADIR_FILL_MASK_RADIUS_RATIO,
-  STAGE_ROOM_ABSOLUTE_TIMEOUT_MS,
   STALE_PROCESSING_MS,
   WORKER_LEASE_MS,
   isStagingDebugEnabled,
@@ -189,10 +183,7 @@ export async function claimStagingJob(jobId: string): Promise<
   if (!job) return { ok: false, error: "Job not found." };
 
   const params = (job.params ?? {}) as Record<string, unknown>;
-  const absoluteTimeoutMs =
-    job.kind === "stage_room"
-      ? STAGE_ROOM_ABSOLUTE_TIMEOUT_MS
-      : JOB_ABSOLUTE_TIMEOUT_MS;
+  const absoluteTimeoutMs = JOB_ABSOLUTE_TIMEOUT_MS;
   const createdAt = Date.parse(job.created_at);
   if (
     (job.status === "queued" || job.status === "processing") &&
@@ -242,8 +233,6 @@ export async function claimStagingJob(jobId: string): Promise<
   }
 
   // Reclaim queued jobs, or processing jobs whose worker lease has expired.
-  // Multi-step stage_room clears the lease between views with no provider_job_id;
-  // requiring stale/provider_job_id alone would stall the cursor forever.
   const reclaimable =
     job.status === "queued" ||
     (job.status === "processing" && !leaseActive);
@@ -355,7 +344,7 @@ async function failJob(
 
 export async function processStagingJob(jobId: string): Promise<{
   status: "succeeded" | "failed" | "processing";
-  result?: RoundTripJobResult | NadirFillJobResult | StageRoomJobResult;
+  result?: RoundTripJobResult | NadirFillJobResult;
   error?: string;
   tourSlug?: string | null;
 }> {
@@ -372,17 +361,6 @@ export async function processStagingJob(jobId: string): Promise<{
   try {
     if (job.kind === "nadir_fill") {
       const result = await processNadirFillJob(job);
-      const admin = createAdminClient();
-      const { data: tour } = await admin
-        .from("tours")
-        .select("slug")
-        .eq("id", job.tour_id)
-        .maybeSingle();
-      return { ...result, tourSlug: tour?.slug ?? null };
-    }
-
-    if (job.kind === "stage_room") {
-      const result = await processStageRoomJob(job);
       const admin = createAdminClient();
       const { data: tour } = await admin
         .from("tours")

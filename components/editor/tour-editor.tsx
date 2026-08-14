@@ -36,9 +36,7 @@ import {
   type EditorScene,
   type NadirTourFields,
 } from "@/components/editor/nadir-settings";
-import { VirtualStagingPanel } from "@/components/editor/virtual-staging-panel";
 import { SceneSidebar } from "@/components/editor/scene-sidebar";
-import type { StagingPlan } from "@/lib/staging/staging-plan-shared";
 import {
   SaveStatusIndicator,
   SaveStatusProvider,
@@ -168,19 +166,7 @@ function TourEditorInner({
     | "adjustments"
     | "floorplan"
     | "effects"
-    | "staging"
   >("hotspots");
-  const [stagingPlan, setStagingPlan] = useState<StagingPlan | null>(() => {
-    const raw = tour.staging_plan;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    return raw as unknown as StagingPlan;
-  });
-  const [stagingStyle, setStagingStyle] = useState<string | null>(
-    tour.staging_style,
-  );
-  const [stagingSeed, setStagingSeed] = useState<number | null>(
-    tour.staging_seed,
-  );
   const [adjustmentsBypassed, setAdjustmentsBypassed] = useState(false);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(() =>
     resolveOpeningSceneIdFromInitial(tour, initialScenes, initialGroups),
@@ -1012,26 +998,7 @@ function TourEditorInner({
               >
                 Nadir
               </button>
-              {stagingEnabled ? (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightPanel === "staging"}
-                  className={cn(
-                    "flex-1 rounded-md px-1.5 py-1.5 text-[11px] font-medium sm:text-xs",
-                    rightPanel === "staging"
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                  onClick={() => {
-                    setAdjustmentsBypassed(false);
-                    setRightPanel("staging");
-                  }}
-                >
-                  Stage
-                </button>
-              ) : null}
-              <button
+                            <button
                 type="button"
                 role="tab"
                 aria-selected={rightPanel === "floorplan"}
@@ -1091,21 +1058,6 @@ function TourEditorInner({
                   onChange={setNadir}
                   onScenesChange={setScenes}
                   stagingEnabled={stagingEnabled}
-                />
-              ) : rightPanel === "staging" && stagingEnabled ? (
-                <VirtualStagingPanel
-                  tourId={tour.id}
-                  scenes={scenes}
-                  activeSceneId={activeSceneId}
-                  onScenesChange={setScenes}
-                  stagingPlan={stagingPlan}
-                  stagingStyle={stagingStyle}
-                  stagingSeed={stagingSeed}
-                  onPlanSaved={(plan) => {
-                    setStagingPlan(plan);
-                    setStagingStyle(plan.style);
-                    setStagingSeed(plan.seed);
-                  }}
                 />
               ) : rightPanel === "floorplan" ? (
                 <FloorPlanEditor
