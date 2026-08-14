@@ -27,7 +27,7 @@ export async function GET(_request: Request, context: RouteContext) {
   const { data: job, error } = await auth.supabase
     .from("staging_jobs")
     .select(
-      "id, tour_id, scene_id, kind, status, params, result_path, error, cost_cents, provider, provider_job_id, created_at, updated_at",
+      "id, tour_id, scene_id, kind, status, params, result_path, error, cost_cents, provider, provider_job_id, step, total_steps, view_results, created_at, updated_at",
     )
     .eq("id", id)
     .maybeSingle();

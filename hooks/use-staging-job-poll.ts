@@ -24,6 +24,9 @@ export type StagingJob = {
   cost_cents: number | null;
   provider?: string | null;
   provider_job_id?: string | null;
+  step?: number | null;
+  total_steps?: number | null;
+  view_results?: unknown;
   created_at: string;
   updated_at: string;
 };

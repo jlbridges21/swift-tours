@@ -69,6 +69,26 @@ export function stagingMaxJobsPerTour(): number {
   return Number.isFinite(n) && n > 0 ? n : 50;
 }
 
+/** Tour-wide AI spend cap (cents). Default $20. */
+export function stagingMaxSpendCentsPerTour(): number {
+  const raw = process.env.STAGING_MAX_SPEND_CENTS_PER_TOUR;
+  const n = raw ? Number.parseInt(raw, 10) : 2000;
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+}
+
+/**
+ * Per-job cost cap (cents). stage_room defaults higher because one scene is
+ * several model calls; override with STAGING_MAX_COST_CENTS_PER_JOB.
+ */
+export function stagingMaxCostCentsPerJob(kind: string): number {
+  const raw = process.env.STAGING_MAX_COST_CENTS_PER_JOB;
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return kind === "stage_room" ? 50 : 20;
+}
+
 /** Default AI provider for new jobs when the client does not specify. */
 export function defaultAiProviderName(): StagingProviderName {
   const env = (process.env.STAGING_PROVIDER ?? "fal_flux_kontext").trim();

@@ -21,14 +21,39 @@ import {
 } from "@/lib/adjustments";
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { clampPlanCoord } from "@/lib/floor-plans";
+import { generateLockedStagingPlan } from "@/lib/staging/generate-plan";
+import {
+  ROOM_TYPES,
+  STAGING_DENSITIES,
+  STAGING_INCLUDES,
+  STAGING_MARKETS,
+  STAGING_PALETTES,
+  STAGING_STYLES,
+  sanitizeNotes,
+  type RoomType,
+  type StagingIntensity,
+  type StagingPlan,
+  type StagingQuestionnaire,
+} from "@/lib/staging/staging-plan-shared";
 import {
   cleanedCompatPath,
   cleanedPath,
   galleryImageObjectPaths,
   sceneObjectPaths,
+  stagedCompatPath,
+  stagedPath,
+  stagingDebugPath,
+  stagingRoomCandidateCompatPath,
+  stagingRoomCandidatePath,
+  stagingViewResultPath,
+  stagingViewSourcePath,
+  stagingWorkCropPath,
+  stagingWorkMaskPath,
+  stagingWorkingEquirectPath,
 } from "@/lib/storage";
 import { isYouTubeId } from "@/lib/youtube";
 import { createClient } from "@/lib/supabase/server";
+import type { Json } from "@/types/database";
 import type { FloorPlan, Scene, SceneGroup } from "@/types";
 
 export type SceneActionResult = {
@@ -216,7 +241,7 @@ export async function deleteScene(sceneId: string): Promise<SceneActionResult> {
   const { data: scene, error: sceneError } = await supabase
     .from("scenes")
     .select(
-      "id, tour_id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, staged_path, staged_compat_path",
+      "id, tour_id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, staged_path, staged_compat_path, staging_candidate_path",
     )
     .eq("id", sceneId)
     .maybeSingle();
@@ -2155,6 +2180,7 @@ async function requireOwnedTourFromJob(jobId: string): Promise<{
     status: string;
     params: Record<string, unknown> | null;
     result_path: string | null;
+    view_results?: unknown;
   };
   tour?: { id: string; owner_id: string; slug: string | null };
 }> {
@@ -2166,7 +2192,7 @@ async function requireOwnedTourFromJob(jobId: string): Promise<{
 
   const { data: job, error } = await supabase
     .from("staging_jobs")
-    .select("id, tour_id, scene_id, status, params, result_path")
+    .select("id, tour_id, scene_id, status, params, result_path, view_results")
     .eq("id", jobId)
     .maybeSingle();
   if (error) return { error: error.message };
@@ -2187,6 +2213,7 @@ async function requireOwnedTourFromJob(jobId: string): Promise<{
     job: {
       ...job,
       params: (job.params ?? {}) as Record<string, unknown>,
+      view_results: job.view_results ?? [],
     },
     tour,
   };
@@ -2213,6 +2240,380 @@ export async function getTourStagingSpendCents(
     0,
   );
   return { cents };
+}
+
+function isOneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+): value is T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value);
+}
+
+function parseStagingQuestionnaire(
+  raw: StagingQuestionnaire,
+): StagingQuestionnaire | { error: string } {
+  if (!isOneOf(raw.style, STAGING_STYLES)) {
+    return { error: "Invalid staging style." };
+  }
+  if (!isOneOf(raw.palette, STAGING_PALETTES)) {
+    return { error: "Invalid staging palette." };
+  }
+  if (!isOneOf(raw.density, STAGING_DENSITIES)) {
+    return { error: "Invalid staging density." };
+  }
+  if (!isOneOf(raw.market, STAGING_MARKETS)) {
+    return { error: "Invalid staging market." };
+  }
+  const includes = Array.isArray(raw.includes)
+    ? raw.includes.filter((item): item is (typeof STAGING_INCLUDES)[number] =>
+        isOneOf(item, STAGING_INCLUDES),
+      )
+    : [];
+  return {
+    style: raw.style,
+    palette: raw.palette,
+    density: raw.density,
+    market: raw.market,
+    includes,
+    notes: sanitizeNotes(raw.notes),
+  };
+}
+
+export async function saveTourStagingPlan(
+  tourId: string,
+  questionnaire: StagingQuestionnaire,
+): Promise<{ plan?: StagingPlan; error?: string }> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const parsed = parseStagingQuestionnaire(questionnaire);
+  if ("error" in parsed) return parsed;
+
+  const seed = Math.floor(Math.random() * 2_147_483_647);
+  const plan = await generateLockedStagingPlan(parsed, seed);
+
+  const { error } = await owned.supabase
+    .from("tours")
+    .update({
+      staging_plan: plan as unknown as Json,
+      staging_style: plan.style,
+      staging_seed: seed,
+    })
+    .eq("id", tourId);
+
+  if (error) return { error: error.message };
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  return { plan };
+}
+
+export async function updateSceneRoomStaging(
+  sceneId: string,
+  input: {
+    roomType: RoomType;
+    intensity?: StagingIntensity;
+    note?: string;
+  },
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedScene(sceneId);
+  if (owned.error || !owned.scene || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  if (!isOneOf(input.roomType, ROOM_TYPES)) {
+    return { error: "Invalid room type." };
+  }
+
+  // intensity / note are applied at job create via params; persist room_type only.
+  void input.intensity;
+  void input.note;
+
+  const { error } = await owned.supabase
+    .from("scenes")
+    .update({ room_type: input.roomType })
+    .eq("id", sceneId);
+
+  if (error) return { error: error.message };
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour.slug);
+  return {};
+}
+
+/**
+ * Apply a succeeded stage_room candidate onto the scene (enables staged).
+ * Copies candidate → canonical staged paths; clears candidate fields.
+ */
+export async function applyStageRoomCandidate(
+  jobId: string,
+): Promise<SceneActionResult & { stagedPath?: string }> {
+  const owned = await requireOwnedTourFromJob(jobId);
+  if (owned.error || !owned.job || !owned.tour || !owned.supabase) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const job = owned.job;
+  if (job.status !== "succeeded") {
+    return { error: "Job is not ready to apply." };
+  }
+  if (!job.scene_id) return { error: "Job has no scene." };
+
+  const params = (job.params ?? {}) as Record<string, unknown>;
+  const src =
+    (typeof params.candidatePath === "string" && params.candidatePath) ||
+    job.result_path;
+  if (!src) return { error: "Candidate not found." };
+
+  const { data: scene, error: sceneError } = await owned.supabase
+    .from("scenes")
+    .select(
+      "id, tour_id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, cleaned_enabled, staged_path, staged_compat_path, staged_enabled, room_type, staging_candidate_path, staging_candidate_job_id",
+    )
+    .eq("id", job.scene_id)
+    .maybeSingle();
+  if (sceneError) return { error: sceneError.message };
+  if (!scene) return { error: "Scene not found." };
+
+  const dest = stagedPath(owned.tour.owner_id, scene.tour_id, scene.id);
+  const destCompat = stagedCompatPath(
+    owned.tour.owner_id,
+    scene.tour_id,
+    scene.id,
+  );
+
+  const { data: file, error: dlErr } = await owned.supabase.storage
+    .from("panoramas")
+    .download(src);
+  if (dlErr || !file) {
+    return { error: dlErr?.message ?? "Failed to download candidate." };
+  }
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const { error: upErr } = await owned.supabase.storage
+    .from("panoramas")
+    .upload(dest, bytes, {
+      contentType: "image/jpeg",
+      cacheControl: "3600",
+      upsert: true,
+    });
+  if (upErr) return { error: upErr.message };
+
+  let compat: string | null = null;
+  const compatSrc =
+    typeof params.candidateCompatPath === "string"
+      ? params.candidateCompatPath
+      : null;
+  if (compatSrc) {
+    const { data: cFile } = await owned.supabase.storage
+      .from("panoramas")
+      .download(compatSrc);
+    if (cFile) {
+      const cBytes = Buffer.from(await cFile.arrayBuffer());
+      const { error: cUp } = await owned.supabase.storage
+        .from("panoramas")
+        .upload(destCompat, cBytes, {
+          contentType: "image/jpeg",
+          cacheControl: "3600",
+          upsert: true,
+        });
+      if (!cUp) compat = destCompat;
+    }
+  }
+
+  const stale = [scene.staged_path, scene.staged_compat_path].filter(
+    (p): p is string => Boolean(p) && p !== dest && p !== compat,
+  );
+  if (stale.length) {
+    await owned.supabase.storage.from("panoramas").remove(stale);
+  }
+
+  // Full path fields — do not partial-upsert the scene row.
+  const { error: sceneUp } = await owned.supabase
+    .from("scenes")
+    .update({
+      storage_path: scene.storage_path,
+      thumbnail_path: scene.thumbnail_path,
+      compat_path: scene.compat_path,
+      nadir_patch_path: scene.nadir_patch_path,
+      cleaned_path: scene.cleaned_path,
+      cleaned_compat_path: scene.cleaned_compat_path,
+      cleaned_enabled: scene.cleaned_enabled,
+      staged_path: dest,
+      staged_compat_path: compat,
+      staged_enabled: true,
+      room_type: scene.room_type,
+      staging_candidate_path: null,
+      staging_candidate_job_id: null,
+    })
+    .eq("id", scene.id);
+  if (sceneUp) return { error: sceneUp.message };
+
+  await owned.supabase
+    .from("staging_jobs")
+    .update({
+      params: {
+        ...params,
+        awaitingReview: false,
+        appliedPath: dest,
+      },
+    })
+    .eq("id", jobId);
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return { stagedPath: dest };
+}
+
+/** Discard stage_room candidate — scene staged_* stays unchanged. */
+export async function discardStageRoomCandidate(
+  jobId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedTourFromJob(jobId);
+  if (owned.error || !owned.job || !owned.tour || !owned.supabase) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const job = owned.job;
+  const params = (job.params ?? {}) as Record<string, unknown>;
+  const ownerId = owned.tour.owner_id;
+  const tourId = job.tour_id;
+
+  const paths: string[] = [];
+  const push = (p: unknown) => {
+    if (typeof p === "string" && p) paths.push(p);
+  };
+
+  push(params.candidatePath);
+  push(params.candidateCompatPath);
+  push(job.result_path);
+  push(stagingRoomCandidatePath(ownerId, tourId, jobId));
+  push(stagingRoomCandidateCompatPath(ownerId, tourId, jobId));
+  push(stagingWorkingEquirectPath(ownerId, tourId, jobId));
+  push(stagingWorkCropPath(ownerId, tourId, jobId));
+  push(stagingWorkMaskPath(ownerId, tourId, jobId));
+
+  for (const name of [
+    "01-source-crop.jpg",
+    "02-mask.png",
+    "03-model-output.jpg",
+    "04-reprojected.png",
+    "05-composite-alpha.png",
+    "06-result.jpg",
+  ]) {
+    push(stagingDebugPath(ownerId, tourId, jobId, name));
+  }
+
+  const viewResults = Array.isArray(job.view_results) ? job.view_results : [];
+  for (const entry of viewResults) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    push(row.sourcePath);
+    push(row.resultPath);
+  }
+
+  // Known view indices 0–11 cover strategies A–D (+ headroom).
+  for (let i = 0; i < 12; i++) {
+    push(stagingViewSourcePath(ownerId, tourId, jobId, i));
+    push(stagingViewResultPath(ownerId, tourId, jobId, i));
+    push(`${ownerId}/${tourId}/staging/${jobId}/views/${i}-collage.jpg`);
+  }
+
+  const { data: views } = await owned.supabase
+    .from("staging_views")
+    .select("source_path, result_path")
+    .eq("job_id", jobId);
+  for (const view of views ?? []) {
+    push(view.source_path);
+    push(view.result_path);
+  }
+
+  if (job.scene_id) {
+    const { data: scene } = await owned.supabase
+      .from("scenes")
+      .select("id, staging_candidate_path, staging_candidate_job_id")
+      .eq("id", job.scene_id)
+      .maybeSingle();
+    if (scene) {
+      push(scene.staging_candidate_path);
+      if (scene.staging_candidate_job_id === jobId) {
+        const { error: sceneUp } = await owned.supabase
+          .from("scenes")
+          .update({
+            staging_candidate_path: null,
+            staging_candidate_job_id: null,
+          })
+          .eq("id", scene.id);
+        if (sceneUp) return { error: sceneUp.message };
+      }
+    }
+  }
+
+  const unique = [...new Set(paths)];
+  if (unique.length) {
+    await owned.supabase.storage.from("panoramas").remove(unique);
+  }
+
+  const { error } = await owned.supabase
+    .from("staging_jobs")
+    .update({
+      status: "cancelled",
+      result_path: null,
+      error: null,
+      params: { ...params, awaitingReview: false, discarded: true },
+    })
+    .eq("id", jobId);
+  if (error) return { error: error.message };
+
+  revalidateTourCaches(tourId, owned.tour.slug);
+  return {};
+}
+
+export async function revertSceneStaged(
+  sceneId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedScene(sceneId);
+  if (owned.error || !owned.scene || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const supabase = owned.supabase;
+  const { data: scene, error: sceneError } = await supabase
+    .from("scenes")
+    .select("id, tour_id, staged_path, staged_compat_path")
+    .eq("id", sceneId)
+    .maybeSingle();
+
+  if (sceneError) return { error: sceneError.message };
+  if (!scene) return { error: "Scene not found." };
+
+  const paths = [scene.staged_path, scene.staged_compat_path].filter(
+    (p): p is string => Boolean(p),
+  );
+  if (paths.length > 0) {
+    const { error: storageError } = await supabase.storage
+      .from("panoramas")
+      .remove(paths);
+    if (storageError) {
+      console.error("[revertSceneStaged] storage remove failed", {
+        sceneId,
+        paths,
+        message: storageError.message,
+      });
+    }
+  }
+
+  const { error: updateError } = await supabase
+    .from("scenes")
+    .update({
+      staged_path: null,
+      staged_compat_path: null,
+      staged_enabled: false,
+    })
+    .eq("id", sceneId);
+
+  if (updateError) return { error: updateError.message };
+
+  revalidateTourCaches(scene.tour_id, owned.tour.slug);
+  return {};
 }
 
 export async function updateScenePlanPlacement(

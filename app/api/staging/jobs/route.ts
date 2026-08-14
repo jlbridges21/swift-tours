@@ -7,8 +7,14 @@ import {
 } from "@/lib/staging/auth";
 import {
   isStagingEnabled,
+  stagingMaxCostCentsPerJob,
   stagingMaxJobsPerTour,
+  stagingMaxSpendCentsPerTour,
 } from "@/lib/staging/providers";
+import {
+  estimateStrategyCostCents,
+  type ViewStrategyId,
+} from "@/lib/staging/view-strategies";
 import type { Json } from "@/types/database";
 
 export const runtime = "nodejs";
@@ -177,6 +183,62 @@ export async function POST(request: Request) {
       "FORBIDDEN",
       "Scene does not belong to this tour.",
     );
+  }
+
+  if (kind === "stage_room") {
+    const { data: tourRow, error: tourErr } = await owned.supabase
+      .from("tours")
+      .select("staging_plan")
+      .eq("id", tourId)
+      .maybeSingle();
+    if (tourErr) {
+      return stagingError(500, "INTERNAL", tourErr.message);
+    }
+    const plan = tourRow?.staging_plan;
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+      return stagingError(
+        400,
+        "BAD_REQUEST",
+        "Complete the tour staging plan questionnaire before staging a room.",
+      );
+    }
+
+    const strategy =
+      typeof params.strategy === "string" ? params.strategy : "A";
+    const estimated = estimateStrategyCostCents(
+      (["A", "B", "C", "D"].includes(strategy)
+        ? strategy
+        : "A") as ViewStrategyId,
+    );
+    const perJobCap = stagingMaxCostCentsPerJob("stage_room");
+    if (estimated > perJobCap) {
+      return stagingError(
+        429,
+        "RATE_LIMIT",
+        `This strategy (~$${(estimated / 100).toFixed(2)}) exceeds the per-job cap ($${(perJobCap / 100).toFixed(2)}).`,
+      );
+    }
+
+    const { data: spendRows, error: spendErr } = await owned.supabase
+      .from("staging_jobs")
+      .select("cost_cents")
+      .eq("tour_id", tourId)
+      .in("status", ["succeeded", "processing", "queued"]);
+    if (spendErr) {
+      return stagingError(500, "INTERNAL", spendErr.message);
+    }
+    const spent = (spendRows ?? []).reduce(
+      (sum, row) => sum + (row.cost_cents ?? 0),
+      0,
+    );
+    const tourCap = stagingMaxSpendCentsPerTour();
+    if (spent + estimated > tourCap) {
+      return stagingError(
+        429,
+        "RATE_LIMIT",
+        `Tour staging spend would exceed the cap ($${(tourCap / 100).toFixed(2)}).`,
+      );
+    }
   }
 
   const { data: job, error: insertError } = await owned.supabase

@@ -4,12 +4,16 @@ import { decodeImageToRgba, encodeRgbaToJpeg } from "@/lib/staging/image-codec";
 import {
   JOB_ABSOLUTE_TIMEOUT_MS,
   NADIR_FILL_CROP_SIZE,
-  STALE_PROCESSING_MS,
+  STAGE_ROOM_ABSOLUTE_TIMEOUT_MS,
   WORKER_LEASE_MS,
   isStagingDebugEnabled,
   type NadirFillJobResult,
 } from "@/lib/staging/process-job-constants";
 import { processNadirFillJob } from "@/lib/staging/process-nadir-fill";
+import {
+  processStageRoomJob,
+  type StageRoomJobResult,
+} from "@/lib/staging/process-stage-room";
 import { roundTripNoEdit, type DiffStats } from "@/lib/staging/projection";
 import { estimateFluxFillCostCents } from "@/lib/staging/providers/fal-flux-fill";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -27,6 +31,7 @@ export {
   NADIR_FILL_FOV_DEGREES,
   NADIR_FILL_MASK_FEATHER_PX,
   NADIR_FILL_MASK_RADIUS_RATIO,
+  STAGE_ROOM_ABSOLUTE_TIMEOUT_MS,
   STALE_PROCESSING_MS,
   WORKER_LEASE_MS,
   isStagingDebugEnabled,
@@ -161,18 +166,21 @@ export async function claimStagingJob(jobId: string): Promise<
         provider_job_id: string | null;
         created_at: string;
         updated_at: string;
+        step: number;
+        total_steps: number | null;
+        view_results: unknown;
+        reference_paths: unknown;
       };
     }
   | { ok: false; error: string; soft?: boolean }
 > {
   const admin = createAdminClient();
   const now = Date.now();
-  const staleBefore = new Date(now - STALE_PROCESSING_MS).toISOString();
 
   const { data: job, error } = await admin
     .from("staging_jobs")
     .select(
-      "id, tour_id, scene_id, kind, status, params, updated_at, created_at, provider, provider_job_id",
+      "id, tour_id, scene_id, kind, status, params, updated_at, created_at, provider, provider_job_id, step, total_steps, view_results, reference_paths",
     )
     .eq("id", jobId)
     .maybeSingle();
@@ -181,36 +189,38 @@ export async function claimStagingJob(jobId: string): Promise<
   if (!job) return { ok: false, error: "Job not found." };
 
   const params = (job.params ?? {}) as Record<string, unknown>;
+  const absoluteTimeoutMs =
+    job.kind === "stage_room"
+      ? STAGE_ROOM_ABSOLUTE_TIMEOUT_MS
+      : JOB_ABSOLUTE_TIMEOUT_MS;
   const createdAt = Date.parse(job.created_at);
   if (
     (job.status === "queued" || job.status === "processing") &&
     Number.isFinite(createdAt) &&
-    now - createdAt > JOB_ABSOLUTE_TIMEOUT_MS
+    now - createdAt > absoluteTimeoutMs
   ) {
+    const minutes = Math.round(absoluteTimeoutMs / 60_000);
+    const timeoutMsg = `Timed out after ${minutes} minutes still processing. The server worker may have been killed — retry the job.`;
     await admin
       .from("staging_jobs")
       .update({
         status: "failed",
-        error:
-          "Timed out after 8 minutes still processing. The server worker may have been killed — retry the job.",
+        error: timeoutMsg,
       })
       .eq("id", jobId)
       .in("status", ["queued", "processing"]);
     return {
       ok: false,
-      error:
-        "Timed out after 8 minutes still processing. The server worker may have been killed — retry the job.",
+      error: timeoutMsg,
     };
   }
 
   // Active worker lease — another /process tick owns this job.
   const leaseUntilRaw =
     typeof params.leaseUntil === "string" ? Date.parse(params.leaseUntil) : 0;
-  if (
-    job.status === "processing" &&
-    Number.isFinite(leaseUntilRaw) &&
-    leaseUntilRaw > now
-  ) {
+  const leaseActive =
+    Number.isFinite(leaseUntilRaw) && leaseUntilRaw > now;
+  if (job.status === "processing" && leaseActive) {
     return {
       ok: false,
       error: "Worker lease active.",
@@ -231,10 +241,12 @@ export async function claimStagingJob(jobId: string): Promise<
     };
   }
 
+  // Reclaim queued jobs, or processing jobs whose worker lease has expired.
+  // Multi-step stage_room clears the lease between views with no provider_job_id;
+  // requiring stale/provider_job_id alone would stall the cursor forever.
   const reclaimable =
     job.status === "queued" ||
-    (job.status === "processing" &&
-      (job.updated_at < staleBefore || Boolean(job.provider_job_id)));
+    (job.status === "processing" && !leaseActive);
 
   if (!reclaimable) {
     return {
@@ -257,7 +269,7 @@ export async function claimStagingJob(jobId: string): Promise<
     .eq("id", jobId)
     .eq("status", job.status)
     .select(
-      "id, tour_id, scene_id, kind, status, params, provider, provider_job_id, created_at, updated_at",
+      "id, tour_id, scene_id, kind, status, params, provider, provider_job_id, created_at, updated_at, step, total_steps, view_results, reference_paths",
     )
     .maybeSingle();
 
@@ -283,6 +295,10 @@ export async function claimStagingJob(jobId: string): Promise<
       provider_job_id: claimed.provider_job_id,
       created_at: claimed.created_at,
       updated_at: claimed.updated_at,
+      step: claimed.step ?? 0,
+      total_steps: claimed.total_steps ?? null,
+      view_results: claimed.view_results ?? [],
+      reference_paths: claimed.reference_paths ?? [],
     },
   };
 }
@@ -339,7 +355,7 @@ async function failJob(
 
 export async function processStagingJob(jobId: string): Promise<{
   status: "succeeded" | "failed" | "processing";
-  result?: RoundTripJobResult | NadirFillJobResult;
+  result?: RoundTripJobResult | NadirFillJobResult | StageRoomJobResult;
   error?: string;
   tourSlug?: string | null;
 }> {
@@ -366,10 +382,14 @@ export async function processStagingJob(jobId: string): Promise<{
     }
 
     if (job.kind === "stage_room") {
-      return failJob(
-        jobId,
-        "stage_room is not implemented yet — use nadir_fill first.",
-      );
+      const result = await processStageRoomJob(job);
+      const admin = createAdminClient();
+      const { data: tour } = await admin
+        .from("tours")
+        .select("slug")
+        .eq("id", job.tour_id)
+        .maybeSingle();
+      return { ...result, tourSlug: tour?.slug ?? null };
     }
 
     return failJob(jobId, `Unknown job kind “${job.kind}”.`);

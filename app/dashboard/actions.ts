@@ -533,7 +533,7 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   // Collect storage paths before the row (and cascade) disappears.
   const { data: scenes, error: scenesError } = await supabase
     .from("scenes")
-    .select("id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, staged_path, staged_compat_path")
+    .select("id, storage_path, thumbnail_path, compat_path, nadir_patch_path, cleaned_path, cleaned_compat_path, staged_path, staged_compat_path, staging_candidate_path")
     .eq("tour_id", id);
 
   if (scenesError) {
@@ -583,6 +583,37 @@ export async function deleteTour(id: string): Promise<ActionResult> {
   for (const image of galleryImages) {
     paths.push(image.storage_path);
     if (image.thumbnail_path) paths.push(image.thumbnail_path);
+  }
+
+  // Staging job workdirs live under {owner}/{tour}/staging/ — list + remove.
+  {
+    const stagingPrefix = `${user.id}/${id}/staging`;
+    const { data: listed } = await supabase.storage
+      .from("panoramas")
+      .list(stagingPrefix, { limit: 100 });
+    for (const entry of listed ?? []) {
+      if (!entry.name) continue;
+      // Job folders: list one level deeper for common files.
+      const jobPrefix = `${stagingPrefix}/${entry.name}`;
+      const { data: jobFiles } = await supabase.storage
+        .from("panoramas")
+        .list(jobPrefix, { limit: 100 });
+      for (const f of jobFiles ?? []) {
+        if (f.name) paths.push(`${jobPrefix}/${f.name}`);
+      }
+      const { data: views } = await supabase.storage
+        .from("panoramas")
+        .list(`${jobPrefix}/views`, { limit: 100 });
+      for (const f of views ?? []) {
+        if (f.name) paths.push(`${jobPrefix}/views/${f.name}`);
+      }
+      const { data: debugs } = await supabase.storage
+        .from("panoramas")
+        .list(`${jobPrefix}/debug`, { limit: 100 });
+      for (const f of debugs ?? []) {
+        if (f.name) paths.push(`${jobPrefix}/debug/${f.name}`);
+      }
+    }
   }
 
   const CHUNK = 100;
@@ -669,6 +700,9 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
     walkthrough_enabled: original.walkthrough_enabled,
     gyroscope_enabled: original.gyroscope_enabled,
     vr_enabled: original.vr_enabled,
+    staging_plan: original.staging_plan,
+    staging_style: original.staging_style,
+    staging_seed: original.staging_seed,
   });
 
   if ("error" in created) {
@@ -831,6 +865,9 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           staged_path: scene.staged_path,
           staged_compat_path: scene.staged_compat_path,
           staged_enabled: scene.staged_enabled,
+          room_type: scene.room_type,
+          staging_candidate_path: null,
+          staging_candidate_job_id: null,
           adjust_brightness: scene.adjust_brightness,
           adjust_contrast: scene.adjust_contrast,
           adjust_saturation: scene.adjust_saturation,

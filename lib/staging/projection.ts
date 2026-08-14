@@ -668,6 +668,35 @@ export function assertOutsideMaskUnchanged(
 }
 
 /**
+ * Apply a soft pitch-based falloff to an equirect coverage mask so the upper
+ * sphere (ceilings / upper walls) stays untouched. Latitude +π/2 = zenith.
+ *
+ * @param fadeStartLat radians — full keep below this (default slightly above horizon)
+ * @param fadeEndLat radians — zero above this (default mid upper wall)
+ */
+export function applyPitchFalloff(
+  mask: CoverageMask,
+  fadeStartLat = 0.05,
+  fadeEndLat = 0.45,
+): CoverageMask {
+  const { width, height, data: src } = mask;
+  const data = new Float32Array(src.length);
+  for (let j = 0; j < height; j++) {
+    const lat = Math.PI / 2 - ((j + 0.5) / height) * Math.PI;
+    let keep = 1;
+    if (lat >= fadeEndLat) keep = 0;
+    else if (lat > fadeStartLat) {
+      keep = 1 - smoothstep(fadeStartLat, fadeEndLat, lat);
+    }
+    for (let i = 0; i < width; i++) {
+      const idx = j * width + i;
+      data[idx] = src[idx]! * keep;
+    }
+  }
+  return { data, width, height };
+}
+
+/**
  * Encode a coverage mask as an 8-bit grayscale PNG-ready RGBA image.
  */
 export function coverageMaskToRgba(mask: CoverageMask): RgbaImage {

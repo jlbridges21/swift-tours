@@ -16,6 +16,8 @@ export const NADIR_FILL_MASK_FEATHER_PX = 72;
 
 export const WORKER_LEASE_MS = 120_000;
 export const JOB_ABSOLUTE_TIMEOUT_MS = 8 * 60 * 1000;
+/** Multi-view room staging needs many sequential provider calls. */
+export const STAGE_ROOM_ABSOLUTE_TIMEOUT_MS = 45 * 60 * 1000;
 
 export function isStagingDebugEnabled(): boolean {
   return process.env.STAGING_DEBUG === "true";

@@ -144,6 +144,52 @@ export function stagingCandidateCompatPath(
   return `${stagingWorkDir(userId, tourId, jobId)}/candidate-${index}_4k.jpg`;
 }
 
+/** Per-view source crop for a stage_room job. */
+export function stagingViewSourcePath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+  viewIndex: number,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/views/${viewIndex}-source.jpg`;
+}
+
+/** Per-view model output for a stage_room job. */
+export function stagingViewResultPath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+  viewIndex: number,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/views/${viewIndex}-result.jpg`;
+}
+
+/** Accumulating working equirect while views complete. */
+export function stagingWorkingEquirectPath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/working.jpg`;
+}
+
+/** Room-staging candidate equirect (awaiting Apply). */
+export function stagingRoomCandidatePath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/staged-candidate.jpg`;
+}
+
+export function stagingRoomCandidateCompatPath(
+  userId: string,
+  tourId: string,
+  jobId: string,
+): string {
+  return `${stagingWorkDir(userId, tourId, jobId)}/staged-candidate_4k.jpg`;
+}
+
 /** Debug / round-trip verification output (not used by the viewer). */
 export function stagingRoundtripPath(
   userId: string,
@@ -209,10 +255,10 @@ export function publicUrl(path: string): string {
 
 /**
  * Collect all panorama objects for a scene.
- * Six logical objects when every variant exists:
- *   storage_path, compat_path, thumbnail_path, nadir_patch_path,
- *   cleaned_path, cleaned_compat_path, staged_path, staged_compat_path
- * (thumb + nadir + two AI variants + originals — audit call sites on change).
+ * Includes original + compat + thumb + nadir + cleaned/staged variants +
+ * pending staging candidate (ten-ish objects when every variant exists).
+ * Job workdir paths (views, collage, debug) are deleted via discard /
+ * tour delete separately — they are not scene columns.
  */
 export function sceneObjectPaths(scene: {
   storage_path: string;
@@ -223,6 +269,7 @@ export function sceneObjectPaths(scene: {
   cleaned_compat_path?: string | null;
   staged_path?: string | null;
   staged_compat_path?: string | null;
+  staging_candidate_path?: string | null;
 }): string[] {
   const paths = [scene.storage_path];
   if (scene.compat_path) paths.push(scene.compat_path);
@@ -232,5 +279,6 @@ export function sceneObjectPaths(scene: {
   if (scene.cleaned_compat_path) paths.push(scene.cleaned_compat_path);
   if (scene.staged_path) paths.push(scene.staged_path);
   if (scene.staged_compat_path) paths.push(scene.staged_compat_path);
+  if (scene.staging_candidate_path) paths.push(scene.staging_candidate_path);
   return paths;
 }

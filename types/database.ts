@@ -3,7 +3,10 @@
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  *
- * After 0018_staging_variants.sql, regenerate so cleaned_* / provider_* stay in sync.
+ * After 0019_virtual_staging.sql, regenerate so room_type / staging_plan /
+ * staging_views / job step columns stay in sync.
+ *
+ *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  */
 export type Json =
   | string
@@ -45,6 +48,9 @@ export type Database = {
           walkthrough_enabled: boolean;
           gyroscope_enabled: boolean;
           vr_enabled: boolean;
+          staging_plan: Json | null;
+          staging_style: string | null;
+          staging_seed: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -76,6 +82,9 @@ export type Database = {
           walkthrough_enabled?: boolean;
           gyroscope_enabled?: boolean;
           vr_enabled?: boolean;
+          staging_plan?: Json | null;
+          staging_style?: string | null;
+          staging_seed?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -107,6 +116,9 @@ export type Database = {
           walkthrough_enabled?: boolean;
           gyroscope_enabled?: boolean;
           vr_enabled?: boolean;
+          staging_plan?: Json | null;
+          staging_style?: string | null;
+          staging_seed?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -153,6 +165,9 @@ export type Database = {
           staged_path: string | null;
           staged_compat_path: string | null;
           staged_enabled: boolean;
+          room_type: string | null;
+          staging_candidate_path: string | null;
+          staging_candidate_job_id: string | null;
           adjust_brightness: number;
           adjust_contrast: number;
           adjust_saturation: number;
@@ -184,6 +199,9 @@ export type Database = {
           staged_path?: string | null;
           staged_compat_path?: string | null;
           staged_enabled?: boolean;
+          room_type?: string | null;
+          staging_candidate_path?: string | null;
+          staging_candidate_job_id?: string | null;
           adjust_brightness?: number;
           adjust_contrast?: number;
           adjust_saturation?: number;
@@ -215,6 +233,9 @@ export type Database = {
           staged_path?: string | null;
           staged_compat_path?: string | null;
           staged_enabled?: boolean;
+          room_type?: string | null;
+          staging_candidate_path?: string | null;
+          staging_candidate_job_id?: string | null;
           adjust_brightness?: number;
           adjust_contrast?: number;
           adjust_saturation?: number;
@@ -606,6 +627,10 @@ export type Database = {
           cost_cents: number | null;
           provider: string | null;
           provider_job_id: string | null;
+          step: number;
+          total_steps: number | null;
+          view_results: Json;
+          reference_paths: Json | null;
           created_at: string;
           updated_at: string;
         };
@@ -621,6 +646,10 @@ export type Database = {
           cost_cents?: number | null;
           provider?: string | null;
           provider_job_id?: string | null;
+          step?: number;
+          total_steps?: number | null;
+          view_results?: Json;
+          reference_paths?: Json | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -636,6 +665,10 @@ export type Database = {
           cost_cents?: number | null;
           provider?: string | null;
           provider_job_id?: string | null;
+          step?: number;
+          total_steps?: number | null;
+          view_results?: Json;
+          reference_paths?: Json | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -652,6 +685,63 @@ export type Database = {
             columns: ["scene_id"];
             isOneToOne: false;
             referencedRelation: "scenes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      staging_views: {
+        Row: {
+          id: string;
+          scene_id: string;
+          job_id: string;
+          view_index: number;
+          yaw: number;
+          pitch: number;
+          fov: number;
+          source_path: string | null;
+          result_path: string | null;
+          status: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          scene_id: string;
+          job_id: string;
+          view_index: number;
+          yaw: number;
+          pitch: number;
+          fov: number;
+          source_path?: string | null;
+          result_path?: string | null;
+          status?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          scene_id?: string;
+          job_id?: string;
+          view_index?: number;
+          yaw?: number;
+          pitch?: number;
+          fov?: number;
+          source_path?: string | null;
+          result_path?: string | null;
+          status?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "staging_views_scene_id_fkey";
+            columns: ["scene_id"];
+            isOneToOne: false;
+            referencedRelation: "scenes";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "staging_views_job_id_fkey";
+            columns: ["job_id"];
+            isOneToOne: false;
+            referencedRelation: "staging_jobs";
             referencedColumns: ["id"];
           },
         ];
