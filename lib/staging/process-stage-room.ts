@@ -16,7 +16,6 @@ import {
 import { generateLayoutPlan } from "@/lib/staging/layout-plan";
 import {
   collageAdjacentRoomInstruction,
-  collageContinuityInstruction,
   composeViewStagingPrompt,
   piecesForView,
   viewImageSeed,
@@ -112,11 +111,8 @@ async function uploadDebug(
 }
 
 /**
- * Side-by-side collage so single-image Kontext can see the prior adjacent view.
- * Left = current empty crop; right = previous staged result.
- *
- * Sized at 16:9 (Kontext has no 2:1 aspect_ratio). Each half is as large as
- * possible so the left extract is ~strategy.size after the model returns.
+ * Side-by-side collage for CROSS-SCENE references only (adjacent room).
+ * Intra-scene continuity uses progressive compositing instead.
  */
 async function buildReferenceCollage(
   current: Buffer,
@@ -143,6 +139,79 @@ async function buildReferenceCollage(
     ])
     .jpeg({ quality: 90 })
     .toBuffer();
+}
+
+async function loadWorkingOrOriginal(options: {
+  admin: ReturnType<typeof createAdminClient>;
+  ownerId: string;
+  tourId: string;
+  jobId: string;
+  originalPath: string;
+}): Promise<{ rgba: RgbaImage; source: "running_composite" | "original" }> {
+  const workingPath = stagingWorkingEquirectPath(
+    options.ownerId,
+    options.tourId,
+    options.jobId,
+  );
+  const { data: workingFile } = await options.admin.storage
+    .from("panoramas")
+    .download(workingPath);
+  if (workingFile) {
+    const rgba = await decodeImageToRgba(
+      Buffer.from(await workingFile.arrayBuffer()),
+    );
+    return { rgba, source: "running_composite" };
+  }
+  const { data: file, error } = await options.admin.storage
+    .from("panoramas")
+    .download(options.originalPath);
+  if (error || !file) {
+    throw new Error(error?.message ?? "Failed to download panorama.");
+  }
+  const rgba = await decodeImageToRgba(Buffer.from(await file.arrayBuffer()));
+  return { rgba, source: "original" };
+}
+
+async function saveWorkingEquirect(options: {
+  admin: ReturnType<typeof createAdminClient>;
+  ownerId: string;
+  tourId: string;
+  jobId: string;
+  image: RgbaImage;
+}): Promise<void> {
+  const jpeg = await encodeRgbaToJpeg(options.image, 92);
+  const path = stagingWorkingEquirectPath(
+    options.ownerId,
+    options.tourId,
+    options.jobId,
+  );
+  const { error } = await options.admin.storage
+    .from("panoramas")
+    .upload(path, jpeg, {
+      contentType: "image/jpeg",
+      cacheControl: "60",
+      upsert: true,
+    });
+  if (error) throw new Error(error.message);
+}
+
+/** Composite one staged perspective into the running equirect (same math as before). */
+function compositeOneViewIntoWorking(options: {
+  working: RgbaImage;
+  staged: RgbaImage;
+  yaw: number;
+  pitch: number;
+  fov: number;
+}): RgbaImage {
+  const re = perspectiveToEquirect(options.staged, {
+    yaw: options.yaw,
+    pitch: options.pitch,
+    fov: options.fov,
+    targetWidth: options.working.width,
+    targetHeight: options.working.height,
+  });
+  const faded = applyPitchFalloff(re.mask);
+  return compositeWithBlendAlpha(options.working, re.image, faded);
 }
 
 async function failJob(
@@ -379,9 +448,37 @@ export async function processStageRoomJob(job: {
             globalDescriptors: plan.global_descriptors,
             roomDescription,
             imageSeedFormula: "tourSeed + viewIndex * 17",
+            progressiveComposite: true,
           } as Json,
         })
         .eq("id", job.id);
+
+      // Seed the running composite from the pristine source panorama.
+      {
+        const sourcePath = resolveStagingInputPath(scene);
+        const { data: file, error: dlErr } = await admin.storage
+          .from("panoramas")
+          .download(sourcePath);
+        if (dlErr || !file) {
+          return failJob(
+            job.id,
+            dlErr?.message ?? "Failed to download panorama for working buffer.",
+          );
+        }
+        const original = await decodeImageToRgba(
+          Buffer.from(await file.arrayBuffer()),
+        );
+        await saveWorkingEquirect({
+          admin,
+          ownerId,
+          tourId: job.tour_id,
+          jobId: job.id,
+          image: original,
+        });
+        console.info(
+          `[stage_room] initialized running composite from original for job ${job.id}`,
+        );
+      }
 
       const { data: existingViews } = await admin
         .from("staging_views")
@@ -549,7 +646,7 @@ export async function processStageRoomJob(job: {
     }
 
     let resultBuf = poll.image;
-    // If we submitted a collage, take the left half.
+    // Cross-scene collage only — extract left half when used.
     if (job.params.usedCollage === true) {
       const meta = await sharp(resultBuf).metadata();
       if (meta.width && meta.height && meta.width >= meta.height * 1.5) {
@@ -580,7 +677,7 @@ export async function processStageRoomJob(job: {
     const resultMeta = await sharp(resultBuf).metadata();
     console.info(
       `[stage_room] view ${step} resolved ${resultMeta.width}×${resultMeta.height}` +
-        (job.params.usedCollage ? " (from collage left half)" : ""),
+        (job.params.usedCollage ? " (cross-scene collage left half)" : " (native)"),
     );
 
     const resultPath = stagingViewResultPath(
@@ -607,6 +704,40 @@ export async function processStageRoomJob(job: {
         resultBuf,
         "image/jpeg",
       );
+    }
+
+    // Progressive composite: fold this view into the running equirect.
+    try {
+      const originalPath = resolveStagingInputPath(scene);
+      const { rgba: working } = await loadWorkingOrOriginal({
+        admin,
+        ownerId,
+        tourId: job.tour_id,
+        jobId: job.id,
+        originalPath,
+      });
+      const staged = await decodeImageToRgba(resultBuf);
+      const nextWorking = compositeOneViewIntoWorking({
+        working,
+        staged,
+        yaw: viewSpec.yaw,
+        pitch: viewSpec.pitch,
+        fov: viewSpec.fov,
+      });
+      await saveWorkingEquirect({
+        admin,
+        ownerId,
+        tourId: job.tour_id,
+        jobId: job.id,
+        image: nextWorking,
+      });
+      console.info(
+        `[stage_room] view ${step} composited into running buffer`,
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to update working composite.";
+      return failJob(job.id, message);
     }
 
     const cost = poll.costCents ?? FAL_KONTEXT_COST_CENTS;
@@ -671,20 +802,30 @@ export async function processStageRoomJob(job: {
     };
   }
 
-  // Submit a new view.
+  // Submit a new view — extract FROM the running composite (not the original).
   try {
-    const sourcePath = resolveStagingInputPath(scene);
-    const { data: file, error: dlErr } = await admin.storage
-      .from("panoramas")
-      .download(sourcePath);
-    if (dlErr || !file) {
-      return failJob(job.id, dlErr?.message ?? "Failed to download panorama.");
-    }
-    const original = await decodeImageToRgba(
-      Buffer.from(await file.arrayBuffer()),
+    const originalPath = resolveStagingInputPath(scene);
+    const priorComposited = viewResults
+      .filter((r) => r.status === "succeeded" && r.resultPath)
+      .map((r) => r.index)
+      .sort((a, b) => a - b);
+    const { rgba: extractSource, source: extractKind } =
+      await loadWorkingOrOriginal({
+        admin,
+        ownerId,
+        tourId: job.tour_id,
+        jobId: job.id,
+        originalPath,
+      });
+
+    console.info(
+      `[stage_room] view ${step} extract source=${extractKind}` +
+        (priorComposited.length
+          ? ` (already composited views: ${priorComposited.join(", ")})`
+          : " (no prior views — reading pristine / initialized working)"),
     );
 
-    const persp = equirectToPerspective(original, {
+    const persp = equirectToPerspective(extractSource, {
       yaw: viewSpec.yaw,
       pitch: viewSpec.pitch,
       fov: viewSpec.fov,
@@ -716,65 +857,42 @@ export async function processStageRoomJob(job: {
       );
     }
 
-    // Collage priority: (1) same-room prior view, (2) adjacent staged room via hotspot.
+    // Cross-scene collage only — never intra-scene side-by-side.
     let submitBuf = cropJpeg;
     let usedCollage = false;
-    let collageKind: "same_room" | "adjacent_room" | null = null;
     let adjacentLabel = "";
 
-    const prior = viewResults
-      .filter((r) => r.status === "succeeded" && r.resultPath)
-      .sort((a, b) => b.index - a.index)[0];
-    if (prior?.resultPath) {
-      const { data: prevFile } = await admin.storage
-        .from("panoramas")
-        .download(prior.resultPath);
-      if (prevFile) {
-        const prevBuf = Buffer.from(await prevFile.arrayBuffer());
-        submitBuf = await buildReferenceCollage(
-          cropJpeg,
-          prevBuf,
-          strategy.size,
-        );
-        usedCollage = true;
-        collageKind = "same_room";
-      }
-    }
-
-    if (!usedCollage) {
-      try {
-        const adj = await findAdjacentRoomCollageRef({
-          tourId: job.tour_id,
-          sceneId: scene.id,
-          sceneRoomKey: roomKey,
-          viewYaw: viewSpec.yaw,
-          viewFov: viewSpec.fov,
+    try {
+      const adj = await findAdjacentRoomCollageRef({
+        tourId: job.tour_id,
+        sceneId: scene.id,
+        sceneRoomKey: roomKey,
+        viewYaw: viewSpec.yaw,
+        viewFov: viewSpec.fov,
+        strategyId,
+      });
+      if (adj) {
+        const rightBuf = await loadCollageRightHalf({
+          path: adj.imagePath,
+          preferViewResult: true,
+          returnYaw: adj.hotspotYaw + Math.PI,
           strategyId,
         });
-        if (adj) {
-          const rightBuf = await loadCollageRightHalf({
-            path: adj.imagePath,
-            preferViewResult: true,
-            returnYaw: adj.hotspotYaw + Math.PI,
-            strategyId,
-          });
-          if (rightBuf) {
-            submitBuf = await buildReferenceCollage(
-              cropJpeg,
-              rightBuf,
-              strategy.size,
-            );
-            usedCollage = true;
-            collageKind = "adjacent_room";
-            adjacentLabel = adj.targetRoomKey;
-            console.info(
-              `[stage_room] cross-scene collage view ${step} ← ${adj.targetSceneId} (${adj.targetRoomKey})`,
-            );
-          }
+        if (rightBuf) {
+          submitBuf = await buildReferenceCollage(
+            cropJpeg,
+            rightBuf,
+            strategy.size,
+          );
+          usedCollage = true;
+          adjacentLabel = adj.targetRoomKey;
+          console.info(
+            `[stage_room] cross-scene collage view ${step} ← ${adj.targetSceneId} (${adj.targetRoomKey})`,
+          );
         }
-      } catch (err) {
-        console.warn("[stage_room] adjacent collage lookup failed", err);
       }
+    } catch (err) {
+      console.warn("[stage_room] adjacent collage lookup failed", err);
     }
 
     const submitPath = usedCollage
@@ -793,15 +911,13 @@ export async function processStageRoomJob(job: {
     if (sceneNote) {
       stagedPrompt = `${stagedPrompt} Additional note for this room: ${sceneNote}`;
     }
-    if (collageKind === "same_room") {
-      stagedPrompt = `${stagedPrompt}${collageContinuityInstruction()}`;
-    } else if (collageKind === "adjacent_room") {
+    if (usedCollage) {
       stagedPrompt = `${stagedPrompt}${collageAdjacentRoomInstruction(adjacentLabel)}`;
     }
 
     const imageSeed = viewImageSeed(seed, step);
     console.info(
-      `[stage_room] view ${step} image seed=${imageSeed} (tourSeed=${seed} + ${step}*17)`,
+      `[stage_room] view ${step} image seed=${imageSeed} (tourSeed=${seed} + ${step}*17) aspect=${usedCollage ? "16:9" : "1:1"}`,
     );
 
     const submitted = await provider.submitInpaint({
@@ -912,6 +1028,19 @@ async function runCompositeStep(options: {
     );
   }
 
+  // Progressive path: promote the running composite. Still build the coverage
+  // union from stored view results for the outside-mask assertion.
+  const workingPath = stagingWorkingEquirectPath(ownerId, tourId, jobId);
+  const { data: workingFile, error: wErr } = await admin.storage
+    .from("panoramas")
+    .download(workingPath);
+  if (wErr || !workingFile) {
+    return failJob(
+      jobId,
+      wErr?.message ?? "Running composite missing — cannot finalize.",
+    );
+  }
+
   const sourcePath = resolveStagingInputPath(scene);
   const { data: file, error: dlErr } = await admin.storage
     .from("panoramas")
@@ -922,12 +1051,9 @@ async function runCompositeStep(options: {
   const original = await decodeImageToRgba(
     Buffer.from(await file.arrayBuffer()),
   );
-
-  let working: RgbaImage = {
-    data: new Uint8ClampedArray(original.data),
-    width: original.width,
-    height: original.height,
-  };
+  const working = await decodeImageToRgba(
+    Buffer.from(await workingFile.arrayBuffer()),
+  );
 
   const unionAlpha: CoverageMask = {
     data: new Float32Array(original.width * original.height),
@@ -945,7 +1071,6 @@ async function runCompositeStep(options: {
     const staged = await decodeImageToRgba(
       Buffer.from(await resFile.arrayBuffer()),
     );
-
     const re = perspectiveToEquirect(staged, {
       yaw: v.yaw,
       pitch: v.pitch,
@@ -957,7 +1082,6 @@ async function runCompositeStep(options: {
     for (let i = 0; i < unionAlpha.data.length; i++) {
       unionAlpha.data[i] = Math.max(unionAlpha.data[i]!, faded.data[i]!);
     }
-    working = compositeWithBlendAlpha(working, re.image, faded);
   }
 
   assertOutsideMaskUnchanged(original, working, unionAlpha);

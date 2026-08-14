@@ -56,7 +56,6 @@ async function main() {
   type StagingQuestionnaire =
     import("../lib/staging/staging-plan-shared").StagingQuestionnaire;
   const {
-    collageContinuityInstruction,
     composeViewStagingPrompt,
     forceSplitLayout,
     piecesForView,
@@ -95,36 +94,6 @@ async function main() {
     includes: ["Wall art", "Area rugs", "Plants", "Lamps and lighting"],
     notes: "",
   };
-
-  async function buildReferenceCollage(
-    current: Buffer,
-    previous: Buffer,
-    halfSize: number,
-  ): Promise<Buffer> {
-    const height = halfSize;
-    const width = Math.round((height * 16) / 9);
-    const halfW = Math.floor(width / 2);
-    const [l, r] = await Promise.all([
-      sharp(current).resize(halfW, height, { fit: "fill" }).toBuffer(),
-      sharp(previous)
-        .resize(width - halfW, height, { fit: "fill" })
-        .toBuffer(),
-    ]);
-    return sharp({
-      create: {
-        width,
-        height,
-        channels: 3,
-        background: { r: 0, g: 0, b: 0 },
-      },
-    })
-      .composite([
-        { input: l, left: 0, top: 0 },
-        { input: r, left: halfW, top: 0 },
-      ])
-      .jpeg({ quality: 90 })
-      .toBuffer();
-  }
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -299,13 +268,35 @@ async function main() {
     }
 
     if (forceSplit) {
-      layout = forceSplitLayout(layout);
+      layout = forceSplitLayout(layout, analysis);
       console.info("[bakeoff] --force-split applied:", JSON.stringify(layout.views));
     }
     console.log("\n========== ROOM ANALYSIS ==========");
     console.log(JSON.stringify(analysis, null, 2));
     console.log("\n========== LAYOUT PLAN ==========");
     console.log(JSON.stringify(layout, null, 2));
+
+    console.log("\n========== INTENDED VIEW ORDER / SOURCES ==========");
+    let priorListed: number[] = [];
+    for (const v of strategy.views) {
+      const pieces = piecesForView(layout, v.index);
+      if (pieces.length === 0) {
+        console.log(
+          `view ${v.index}: SKIP (empty) — no extract, working unchanged`,
+        );
+        continue;
+      }
+      console.log(
+        `view ${v.index}: extract from running_composite` +
+          (priorListed.length
+            ? ` (already composited: ${priorListed.join(", ")})`
+            : " (initialized from original)") +
+          ` → generate @ ${strategy.size}×${strategy.size} (1:1, no intra-scene collage)` +
+          ` → composite back into working`,
+      );
+      priorListed = [...priorListed, v.index];
+    }
+    console.log("candidate = final working composite");
 
     for (const v of layout.views) {
       const prompt = composeViewStagingPrompt({
@@ -339,6 +330,17 @@ async function main() {
     const resolutions: string[] = [];
     const viewResults: { index: number; buf: Buffer }[] = [];
 
+    let working: RgbaImage = {
+      data: new Uint8ClampedArray(original.data),
+      width: original.width,
+      height: original.height,
+    };
+    const unionAlpha: CoverageMask = {
+      data: new Float32Array(original.width * original.height),
+      width: original.width,
+      height: original.height,
+    };
+
     try {
       for (const view of strategy.views) {
         const pieces = piecesForView(layout, view.index);
@@ -354,7 +356,15 @@ async function main() {
           continue;
         }
 
-        const persp = equirectToPerspective(original, {
+        const priorIdx = viewResults.map((r) => r.index);
+        console.log(
+          `  view ${view.index} extract source=running_composite` +
+            (priorIdx.length
+              ? ` (already composited: ${priorIdx.join(", ")})`
+              : " (from original init)"),
+        );
+
+        const persp = equirectToPerspective(working, {
           yaw: view.yaw,
           pitch: view.pitch,
           fov: view.fov,
@@ -368,47 +378,20 @@ async function main() {
           "image/jpeg",
         );
 
-        let submitBuf = cropJpeg;
-        let usedCollage = false;
-        const prior = viewResults[viewResults.length - 1];
-        if (prior) {
-          submitBuf = await buildReferenceCollage(
-            cropJpeg,
-            prior.buf,
-            strategy.size,
-          );
-          usedCollage = true;
-          await upload(
-            `${strategyId}/view-${view.index}-collage.jpg`,
-            submitBuf,
-            "image/jpeg",
-          );
-        }
-
-        let stagedPrompt = viewPrompt;
-        if (usedCollage) {
-          stagedPrompt = `${stagedPrompt}${collageContinuityInstruction()}`;
-        }
-
-        const imageUrl = usedCollage
-          ? publicUrl(
-              `${basePrefix}/${strategyId}/view-${view.index}-collage.jpg`,
-            )
-          : srcUp.url;
+        const submitBuf = cropJpeg;
+        const stagedPrompt = viewPrompt;
 
         console.log(
-          `  submitting view ${view.index + 1}/${strategy.views.length}` +
-            (usedCollage ? " (collage 16:9)" : " (1:1)") +
-            "…",
+          `  submitting view ${view.index + 1}/${strategy.views.length} (1:1 native ${strategy.size}²)…`,
         );
         const submitted = await falKontextProvider.submitInpaint({
           image: submitBuf,
           mask: Buffer.alloc(0),
-          imageUrl,
+          imageUrl: srcUp.url,
           prompt: stagedPrompt,
           seed: viewImageSeed(seed, view.index),
           numImages: 1,
-          aspectRatio: usedCollage ? "16:9" : "1:1",
+          aspectRatio: "1:1",
         });
         console.log(
           `  image seed=${viewImageSeed(seed, view.index)} (tourSeed + viewIndex*17)`,
@@ -437,26 +420,10 @@ async function main() {
           `  raw provider output: ${rawMeta.width}×${rawMeta.height}`,
         );
 
-        if (usedCollage) {
-          const meta = await sharp(resultBuf).metadata();
-          if (meta.width && meta.height && meta.width >= meta.height * 1.5) {
-            resultBuf = await sharp(resultBuf)
-              .extract({
-                left: 0,
-                top: 0,
-                width: Math.floor(meta.width / 2),
-                height: meta.height,
-              })
-              .resize(strategy.size, strategy.size, { fit: "fill" })
-              .jpeg({ quality: 92 })
-              .toBuffer();
-          }
-        } else {
-          resultBuf = await sharp(resultBuf)
-            .resize(strategy.size, strategy.size, { fit: "fill" })
-            .jpeg({ quality: 92 })
-            .toBuffer();
-        }
+        resultBuf = await sharp(resultBuf)
+          .resize(strategy.size, strategy.size, { fit: "fill" })
+          .jpeg({ quality: 92 })
+          .toBuffer();
 
         const finalMeta = await sharp(resultBuf).metadata();
         resolutions.push(
@@ -470,28 +437,13 @@ async function main() {
         );
         viewResults.push({ index: view.index, buf: resultBuf });
         generated += 1;
-        console.log(`  view ${view.index} done — ${resUp.url}`);
-      }
 
-      let working: RgbaImage = {
-        data: new Uint8ClampedArray(original.data),
-        width: original.width,
-        height: original.height,
-      };
-      const unionAlpha: CoverageMask = {
-        data: new Float32Array(original.width * original.height),
-        width: original.width,
-        height: original.height,
-      };
-
-      for (const v of strategy.views) {
-        const entry = viewResults.find((r) => r.index === v.index);
-        if (!entry) continue;
-        const staged = await decodeImageToRgba(entry.buf);
+        // Progressive composite into working.
+        const staged = await decodeImageToRgba(resultBuf);
         const re = perspectiveToEquirect(staged, {
-          yaw: v.yaw,
-          pitch: v.pitch,
-          fov: v.fov,
+          yaw: view.yaw,
+          pitch: view.pitch,
+          fov: view.fov,
           targetWidth: original.width,
           targetHeight: original.height,
         });
@@ -500,6 +452,9 @@ async function main() {
           unionAlpha.data[i] = Math.max(unionAlpha.data[i]!, faded.data[i]!);
         }
         working = compositeWithBlendAlpha(working, re.image, faded);
+        console.log(
+          `  view ${view.index} composited into running buffer — ${resUp.url}`,
+        );
       }
 
       assertOutsideMaskUnchanged(original, working, unionAlpha);

@@ -4,6 +4,7 @@ import { fal } from "@fal-ai/client";
 
 import {
   buildFallbackLayoutPlan,
+  coalesceRelatedPieces,
   splitRoomDescriptionIntoPieces,
   type StagingLayout,
   type StagingRoomAnalysis,
@@ -52,12 +53,15 @@ Return ONLY valid JSON:
 {"views":[{"index":0,"pieces":["…"]}]}
 
 Rules:
+- Prefer concentrating a room's PRIMARY furniture grouping into ONE view (the best large-capacity wall). Single-view concentration is the correct default.
+- Split across views ONLY when the room has separate functional zones (e.g. bedroom + seating nook, living + dining).
+- When splitting, pieces that belong to one grouping stay together. If a piece's text references another piece (e.g. "canvas above the sofa"), assign it to the SAME view as that piece.
 - Every listed piece appears in EXACTLY ONE view's pieces array.
 - Do not invent pieces that are not in the list.
 - Never assign furniture to a view with capacity "clear".
 - Do not place a sofa/bed/large seating blocking a doorway, opening, or primary window walkway.
 - Floor-centre items (rugs, coffee tables) go in the SAME view as the primary seating they belong with.
-- A view may have an empty pieces array — that is correct for clear walls.
+- A view may have an empty pieces array — that is correct for clear walls or unused directions.
 - Include every view index from the analysis (${options.analysis.views.map((v) => v.index).join(", ")}).`,
         system_prompt: "Return only JSON. No markdown fences.",
       },
@@ -120,12 +124,12 @@ Rules:
       }
     }
 
-    return {
+    return coalesceRelatedPieces({
       strategy: options.strategy,
       views: assignments,
       source_room_description: options.roomDescription,
       planned_at: new Date().toISOString(),
-    };
+    });
   } catch (err) {
     console.error("[layout-plan] generate failed, using fallback", err);
     return fallback;

@@ -71,7 +71,7 @@ export function piecesForView(
   return entry?.pieces ?? [];
 }
 
-/** Per-view staging prompt — only the pieces assigned to THIS view. */
+/** Per-view staging prompt — pieces first for adherence, then no-dupe, then globals. */
 export function composeViewStagingPrompt(options: {
   pieces: string[];
   globalDescriptors: string;
@@ -84,6 +84,7 @@ export function composeViewStagingPrompt(options: {
 
   return (
     `Add to this view: ${list}. ` +
+    `Some furniture may already be visible in this view. Leave it exactly as it is and do not duplicate it. Add only the pieces listed above. ` +
     (descriptors ? `${descriptors}. ` : "") +
     `Add NO other furniture, rugs, art, or decor. The rest of this room's furnishings are ` +
     `outside this view and must not appear here. ` +
@@ -93,7 +94,7 @@ export function composeViewStagingPrompt(options: {
   );
 }
 
-/** Same-room adjacent view (continuity within one room_key). */
+/** @deprecated Intra-scene collage removed; progressive composite replaced it. */
 export function collageContinuityInstruction(): string {
   return (
     ` The image is a side-by-side pair of the SAME room: furnish ONLY the LEFT half. ` +
@@ -119,42 +120,179 @@ export function viewImageSeed(tourSeed: number, viewIndex: number): number {
   return tourSeed + viewIndex * 17;
 }
 
+const ANCHOR_RE =
+  /\b(sofa|couch|sectional|loveseat|bed|dining table|desk)\b/i;
+const FLOOR_CENTRE_RE = /\b(rug|carpet|coffee table|ottoman|centerpiece)\b/i;
+
+function isAnchorPiece(p: string): boolean {
+  return ANCHOR_RE.test(p);
+}
+
+function isFloorCentrePiece(p: string): boolean {
+  return FLOOR_CENTRE_RE.test(p);
+}
+
+/** True when `piece` textually depends on `anchor` (e.g. canvas "above the sofa"). */
+export function pieceReferencesAnchor(piece: string, anchor: string): boolean {
+  if (piece === anchor) return false;
+  const lower = piece.toLowerCase();
+  const nouns = anchor
+    .toLowerCase()
+    .match(
+      /\b(sofa|couch|sectional|loveseat|bed|table|desk|armchair|chair|rug|lamp)\b/g,
+    );
+  if (!nouns || nouns.length === 0) return false;
+  return nouns.some((n) => {
+    if (!lower.includes(n)) return false;
+    // Dependent phrasing, or shared noun while this piece is not itself the anchor type.
+    return (
+      new RegExp(
+        `\\b(above|beside|with|on|under|near|behind|facing|against)\\b[\\s\\w-]*\\b${n}\\b`,
+        "i",
+      ).test(piece) ||
+      (lower.includes(n) && !isAnchorPiece(piece) && isAnchorPiece(anchor))
+    );
+  });
+}
+
 /**
- * Force-split helper for bake-off: redistribute pieces across ≥2 non-clear views.
+ * Cluster pieces into coherent groupings (primary seating + dependents first).
+ * Used by the fallback planner and --force-split.
  */
-export function forceSplitLayout(layout: StagingLayout): StagingLayout {
+export function clusterFurnitureGroups(pieces: string[]): string[][] {
+  if (pieces.length === 0) return [];
+  const remaining = [...pieces];
+  const anchors = remaining.filter(isAnchorPiece);
+  const primaryAnchor = anchors[0] ?? remaining[0]!;
+  const primary: string[] = [];
+  const secondary: string[] = [];
+
+  for (const p of remaining) {
+    if (p === primaryAnchor) {
+      primary.push(p);
+      continue;
+    }
+    if (
+      pieceReferencesAnchor(p, primaryAnchor) ||
+      isFloorCentrePiece(p) ||
+      /\b(canvas|painting|art above|abstract)\b/i.test(p)
+    ) {
+      primary.push(p);
+      continue;
+    }
+    if (anchors.includes(p) && p !== primaryAnchor) {
+      secondary.push(p);
+      continue;
+    }
+    if (
+      /\b(armchair|side chair|accent chair|fig|plant|floor lamp|console)\b/i.test(
+        p,
+      )
+    ) {
+      secondary.push(p);
+      continue;
+    }
+    primary.push(p);
+  }
+
+  // Ensure dependents of secondary anchors stay with them.
+  const moved: string[] = [];
+  for (const p of primary) {
+    for (const a of secondary) {
+      if (pieceReferencesAnchor(p, a)) {
+        secondary.push(p);
+        moved.push(p);
+        break;
+      }
+    }
+  }
+  const primaryFinal = primary.filter((p) => !moved.includes(p));
+
+  if (secondary.length === 0) return [primaryFinal];
+  return [primaryFinal, secondary];
+}
+
+/**
+ * Move any piece that references another piece onto that piece's view.
+ */
+export function coalesceRelatedPieces(layout: StagingLayout): StagingLayout {
+  const pieceToView = new Map<string, number>();
+  for (const v of layout.views) {
+    for (const p of v.pieces) pieceToView.set(p, v.index);
+  }
+  const all = layout.views.flatMap((v) => v.pieces);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const piece of all) {
+      for (const other of all) {
+        if (!pieceReferencesAnchor(piece, other)) continue;
+        const from = pieceToView.get(piece);
+        const to = pieceToView.get(other);
+        if (from === undefined || to === undefined || from === to) continue;
+        pieceToView.set(piece, to);
+        changed = true;
+      }
+    }
+  }
+  const views = layout.views.map((v) => ({ index: v.index, pieces: [] as string[] }));
+  for (const [piece, index] of pieceToView) {
+    views.find((v) => v.index === index)?.pieces.push(piece);
+  }
+  // Preserve original order within each view.
+  for (const v of views) {
+    v.pieces.sort((a, b) => all.indexOf(a) - all.indexOf(b));
+  }
+  return { ...layout, views, planned_at: new Date().toISOString() };
+}
+
+/**
+ * Force-split for bake-off: two coherent groupings across two usable views.
+ * Never orphans a dependent (canvas above sofa stays with the sofa).
+ */
+export function forceSplitLayout(
+  layout: StagingLayout,
+  analysis?: StagingRoomAnalysis,
+): StagingLayout {
   const allPieces = layout.views.flatMap((v) => v.pieces);
   if (allPieces.length < 2) return layout;
 
-  const targets = layout.views.filter((v) => {
-    // Prefer views that already had capacity in analysis — keep indices.
-    return true;
-  });
-  if (targets.length < 2) return layout;
+  const groups = clusterFurnitureGroups(allPieces);
+  if (groups.length < 2) {
+    // Artificial but coherent: anchors+deps vs remaining accents.
+    const [only] = groups;
+    if (!only || only.length < 2) return layout;
+    const mid = Math.max(1, Math.ceil(only.length / 2));
+    // Prefer splitting after the primary anchor cluster — keep first half together.
+    groups.length = 0;
+    groups.push(only.slice(0, mid), only.slice(mid));
+  }
+
+  const usableIndexes = layout.views
+    .map((v) => v.index)
+    .filter((i) => {
+      const cap = analysis?.views.find((a) => a.index === i)?.capacity;
+      return cap !== "clear";
+    });
+  const aIdx = usableIndexes[0] ?? 0;
+  const bIdx = usableIndexes[1] ?? usableIndexes[0] ?? 1;
 
   const next = layout.views.map((v) => ({ index: v.index, pieces: [] as string[] }));
-  // Put first half on first view with any prior pieces or index 0; rest on next.
-  const usable = next.filter((_, i) => layout.views[i] !== undefined);
-  const a = usable[0]!;
-  const b = usable[1] ?? usable[0]!;
-  const mid = Math.ceil(allPieces.length / 2);
-  a.pieces = allPieces.slice(0, mid);
-  b.pieces = allPieces.slice(mid);
-  // Clear others
-  for (const v of next) {
-    if (v.index !== a.index && v.index !== b.index) v.pieces = [];
-  }
-  return {
+  const slotA = next.find((v) => v.index === aIdx)!;
+  const slotB = next.find((v) => v.index === bIdx) ?? slotA;
+  slotA.pieces = groups[0] ?? [];
+  slotB.pieces = groups[1] ?? [];
+
+  return coalesceRelatedPieces({
     ...layout,
     views: next,
     planned_at: new Date().toISOString(),
-  };
+  });
 }
 
 /**
  * Deterministic fallback layout when the text model is unavailable.
- * Puts large seating on the first large-capacity wall; floor pieces with seating;
- * small accents on remaining usable views; clears doorway/window-only views.
+ * Prefers concentrating the primary furniture grouping into ONE large-capacity view.
  */
 export function buildFallbackLayoutPlan(options: {
   strategy: ViewStrategyId;
@@ -167,65 +305,38 @@ export function buildFallbackLayoutPlan(options: {
     pieces: [] as string[],
   }));
 
-  const isFloorCentre = (p: string) =>
-    /\b(rug|carpet|coffee table|ottoman|centerpiece)\b/i.test(p);
-
   const largeHost =
     views.find((_, i) => options.analysis.views[i]?.capacity === "large") ??
     views[0];
-  const smallHosts = views.filter(
-    (_, i) =>
-      options.analysis.views[i]?.capacity === "small" ||
-      options.analysis.views[i]?.capacity === "large",
-  );
+  const groups = clusterFurnitureGroups(pieces);
 
-  const floorPieces: string[] = [];
-  const otherPieces: string[] = [];
-  for (const p of pieces) {
-    if (isFloorCentre(p)) floorPieces.push(p);
-    else otherPieces.push(p);
+  if (largeHost && groups[0]) {
+    largeHost.pieces.push(...groups[0]);
+  }
+  // Only split when a second group exists (separate functional zone).
+  if (groups[1] && groups[1].length > 0) {
+    const second =
+      views.find(
+        (v, i) =>
+          v.index !== largeHost?.index &&
+          options.analysis.views[i]?.capacity !== "clear",
+      ) ?? largeHost;
+    second?.pieces.push(...groups[1]);
   }
 
-  if (largeHost) {
-    for (const p of otherPieces) {
-      // Prefer blank/large walls for sofas and art; distribute round-robin after.
-      if (
-        /\b(sofa|couch|sectional|loveseat|bed|dining table)\b/i.test(p) ||
-        largeHost.pieces.length === 0
-      ) {
-        largeHost.pieces.push(p);
-      } else {
-        const host =
-          smallHosts.find((h) => h.index !== largeHost.index) ?? largeHost;
-        host.pieces.push(p);
-      }
-    }
-    // Floor-centre with the primary seating view.
-    largeHost.pieces.push(...floorPieces);
-  }
-
-  // Rebalance: if a clear-capacity view got pieces, move them.
+  // Clear-capacity views stay empty.
   for (let i = 0; i < views.length; i++) {
-    const capacity = options.analysis.views[i]?.capacity;
-    if (capacity === "clear" && views[i]!.pieces.length > 0) {
-      const dest =
-        views.find(
-          (v, j) =>
-            j !== i && options.analysis.views[j]?.capacity !== "clear",
-        ) ?? largeHost;
-      if (dest && dest !== views[i]) {
-        dest.pieces.push(...views[i]!.pieces);
-        views[i]!.pieces = [];
-      }
+    if (options.analysis.views[i]?.capacity === "clear") {
+      views[i]!.pieces = [];
     }
   }
 
-  return {
+  return coalesceRelatedPieces({
     strategy: options.strategy,
     views,
     source_room_description: options.roomDescription,
     planned_at: new Date().toISOString(),
-  };
+  });
 }
 
 export function buildFallbackRoomAnalysis(
