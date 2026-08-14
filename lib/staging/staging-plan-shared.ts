@@ -83,7 +83,14 @@ export type StagingPlan = {
   includes: string[];
   notes: string;
   global_descriptors: string;
-  rooms: Partial<Record<RoomType, string>>;
+  /**
+   * Furniture descriptions keyed by room_key (e.g. living_room_1), NOT room_type.
+   * Two bedrooms → two keys → two different sentences; two scenes in one living room
+   * share one key → identical sentence.
+   */
+  rooms: Record<string, string>;
+  /** room_key → room_type used when the description was frozen. */
+  room_types: Record<string, RoomType>;
   locked_at: string;
 };
 
@@ -102,14 +109,17 @@ export function composeRoomStagingPrompt(options: {
   roomType: RoomType;
   plan: StagingPlan;
   intensity?: StagingIntensity;
+  /** Prefer room_key lookup; falls back to roomType for legacy plans. */
+  roomKey?: string;
 }): string {
-  const { roomType, plan, intensity = "fully" } = options;
+  const { roomType, plan, intensity = "fully", roomKey } = options;
   if (intensity === "empty") {
     return "Leave this room empty. Do not add furniture or decor. Keep the existing architecture exactly as photographed.";
   }
 
   const roomLabel = roomType.replace(/_/g, " ");
   const furniture =
+    (roomKey && plan.rooms[roomKey]?.trim()) ||
     plan.rooms[roomType]?.trim() ||
     `tasteful ${plan.density.toLowerCase()} furnishings appropriate for a ${roomLabel}`;
   const light =
@@ -138,19 +148,8 @@ export function buildFallbackStagingPlan(
     `including ${includes}` +
     (notes ? `; ${notes}` : "");
 
-  const rooms: StagingPlan["rooms"] = {
-    living_room: `a sofa and complementary seating in a ${q.style.toLowerCase()} style, a coffee table, an area rug, and restrained ${q.palette.toLowerCase()} accents`,
-    dining_room: `a dining table with chairs sized for a ${q.market.toLowerCase()}, a simple centerpiece, and lighting that matches the existing fixtures`,
-    bedroom: `a made bed with coordinated linens, two nightstands with lamps, and soft ${q.palette.toLowerCase()} textiles`,
-    primary_bedroom: `a made bed with elevated linens, nightstands with lamps, and calm ${q.palette.toLowerCase()} textiles`,
-    kitchen: `styled counters with a small plant or bowl, bar stools if an island exists, and no appliance changes`,
-    office: `a desk and chair, a task lamp, and sparse ${q.style.toLowerCase()} desk accessories`,
-    bathroom: `folded towels, a small plant, and subtle toiletries — no fixture changes`,
-    entry: `a console or bench, a mirror or art, and a simple rug runner`,
-    basement: `comfortable seating and a side table in a ${q.style.toLowerCase()} style, keeping columns and stairs unchanged`,
-    outdoor: `outdoor seating and a low table appropriate for the climate, keeping hardscape unchanged`,
-    other: `a few essential ${q.style.toLowerCase()} pieces that fit the space without crowding`,
-  };
+  const rooms: StagingPlan["rooms"] = {};
+  const room_types: StagingPlan["room_types"] = {};
 
   return {
     style: q.style,
@@ -162,6 +161,7 @@ export function buildFallbackStagingPlan(
     notes,
     global_descriptors: global,
     rooms,
+    room_types,
     locked_at: new Date().toISOString(),
   };
 }

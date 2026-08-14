@@ -6,7 +6,9 @@ import { toast } from "sonner";
 import {
   discardStageRoomCandidate,
   applyStageRoomCandidate,
+  getTourStagingOrder,
   getTourStagingSpendCents,
+  regenerateSceneStagingLayout,
   revertSceneStaged,
   saveTourStagingPlan,
   updateSceneRoomStaging,
@@ -14,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { fetchWithTimeout } from "@/lib/staging/client-fetch";
+import { labelRoomKey } from "@/lib/staging/room-identity";
 import {
   ROOM_TYPES,
   STAGING_DENSITIES,
@@ -92,8 +95,10 @@ async function createAndKickStageJob(
   params: {
     strategy: ViewStrategyId;
     roomType: RoomType;
+    roomKey?: string;
     intensity: StagingIntensity;
     note: string;
+    regeneratePlan?: boolean;
   },
 ): Promise<{ jobId?: string; error?: string }> {
   const create = await fetchWithTimeout("/api/staging/jobs", {
@@ -181,14 +186,28 @@ export function VirtualStagingPanel({
     return "living_room";
   }, [active?.room_type]);
 
+  const roomKey = active?.room_key ?? null;
+
+  const existingRoomKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const s of scenes) {
+      if (s.room_key) keys.add(s.room_key);
+    }
+    if (plan?.rooms) {
+      for (const k of Object.keys(plan.rooms)) keys.add(k);
+    }
+    return [...keys].sort();
+  }, [scenes, plan]);
+
   const examplePrompt = useMemo(() => {
     if (!plan) return null;
     return composeRoomStagingPrompt({
       roomType: "living_room",
       plan,
       intensity: "fully",
+      roomKey: roomKey ?? undefined,
     });
-  }, [plan]);
+  }, [plan, roomKey]);
 
   const costCents = estimateStrategyCostCents(strategy);
   const seconds = estimateStrategySeconds(strategy);
@@ -297,31 +316,151 @@ export function VirtualStagingPanel({
 
   function handleRoomTypeChange(next: RoomType) {
     if (!active) return;
-    onScenesChange(
-      scenes.map((scene) =>
-        scene.id === active.id ? { ...scene, room_type: next } : scene,
-      ),
-    );
     startTransition(async () => {
       const result = await updateSceneRoomStaging(active.id, {
         roomType: next,
+        createNewRoom: true,
         intensity,
         note,
       });
-      if (result.error) toast.error(result.error);
+      if (result.error) {
+        toast.error(result.error);
+        return;
+      }
+      onScenesChange(
+        scenes.map((scene) =>
+          scene.id === active.id
+            ? {
+                ...scene,
+                room_type: next,
+                room_key: result.roomKey ?? scene.room_key,
+              }
+            : scene,
+        ),
+      );
+      if (result.plan) onPlanSaved(result.plan);
+    });
+  }
+
+  function handleRoomKeyChange(nextKey: string) {
+    if (!active) return;
+    if (nextKey === "__new__") {
+      handleRoomTypeChange(roomType);
+      return;
+    }
+    const typeFromKey = (ROOM_TYPES as readonly string[]).find(
+      (t) => nextKey === t || nextKey.startsWith(`${t}_`),
+    ) as RoomType | undefined;
+    const nextType = typeFromKey ?? roomType;
+    startTransition(async () => {
+      const result = await updateSceneRoomStaging(active.id, {
+        roomType: nextType,
+        roomKey: nextKey,
+        intensity,
+        note,
+      });
+      if (result.error) {
+        toast.error(result.error);
+        return;
+      }
+      onScenesChange(
+        scenes.map((scene) =>
+          scene.id === active.id
+            ? {
+                ...scene,
+                room_type: nextType,
+                room_key: result.roomKey ?? nextKey,
+              }
+            : scene,
+        ),
+      );
+      if (result.plan) onPlanSaved(result.plan);
+    });
+  }
+
+  function handleRegenerateLayout() {
+    if (!active) return;
+    const ok = window.confirm(
+      "Regenerate room analysis and layout for this scene? The next staging run will call vision + planner again.",
+    );
+    if (!ok) return;
+    startTransition(async () => {
+      const result = await regenerateSceneStagingLayout(active.id);
+      if (result.error) {
+        toast.error(result.error);
+        return;
+      }
+      toast.success("Layout cleared — next stage will regenerate.");
+    });
+  }
+
+  async function handleStageAll() {
+    if (!plan) return;
+    const orderResult = await getTourStagingOrder(tourId);
+    if (orderResult.error || !orderResult.order) {
+      toast.error(orderResult.error ?? "Could not compute staging order.");
+      return;
+    }
+    const pending = orderResult.order.filter((e) => !e.alreadyStaged);
+    const lines = orderResult.order
+      .map(
+        (e, i) =>
+          `${i + 1}. ${e.name} (${e.outboundLinks} links)` +
+          (e.alreadyStaged ? " — skip (already staged)" : ""),
+      )
+      .join("\n");
+    const ok = window.confirm(
+      `Stage all scenes in this order?\n\n${lines}\n\nFurniture seen through openings will match style and materials of already-staged rooms, but not exact position (that would need 3D reconstruction).\n\n${pending.length} scene(s) will be queued.`,
+    );
+    if (!ok) return;
+
+    startTransition(async () => {
+      for (const entry of pending) {
+        const scene = scenes.find((s) => s.id === entry.sceneId);
+        if (!scene) continue;
+        const rt =
+          scene.room_type &&
+          (ROOM_TYPES as readonly string[]).includes(scene.room_type)
+            ? (scene.room_type as RoomType)
+            : "living_room";
+        const persist = await updateSceneRoomStaging(scene.id, {
+          roomType: rt,
+          roomKey: scene.room_key,
+          intensity: "fully",
+        });
+        if (persist.error) {
+          toast.error(`${scene.name}: ${persist.error}`);
+          continue;
+        }
+        const result = await createAndKickStageJob(tourId, scene.id, {
+          strategy,
+          roomType: rt,
+          roomKey: persist.roomKey ?? scene.room_key ?? undefined,
+          intensity: "fully",
+          note: "",
+        });
+        if (result.error) {
+          toast.error(`${scene.name}: ${result.error}`);
+          continue;
+        }
+        // Kick sequentially; wait briefly so lease/order stays sensible.
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      toast.success(`Queued ${pending.length} staging job(s).`);
     });
   }
 
   function handleStageRoom() {
     if (!active || !plan) return;
     const ok = window.confirm(
-      `Virtually stage this room?\n\nStrategy ${strategy}: ${strategyMeta.name}\nEstimated cost: ${formatCents(costCents)}\nEstimated time: ${formatSeconds(seconds)}\n\nYou will review a candidate before it is applied.`,
+      `Virtually stage this room?\n\nStrategy ${strategy}: ${strategyMeta.name}\nEstimated cost: ${formatCents(costCents)}\nEstimated time: ${formatSeconds(seconds)}\n\nFurniture in an adjacent room will match style and materials but not exact position.\n\nYou will review a candidate before it is applied.`,
     );
     if (!ok) return;
 
     startTransition(async () => {
       const persist = await updateSceneRoomStaging(active.id, {
         roomType,
+        roomKey: roomKey,
         intensity,
         note,
       });
@@ -329,10 +468,21 @@ export function VirtualStagingPanel({
         toast.error(persist.error);
         return;
       }
+      if (persist.plan) onPlanSaved(persist.plan);
+      if (persist.roomKey) {
+        onScenesChange(
+          scenes.map((scene) =>
+            scene.id === active.id
+              ? { ...scene, room_key: persist.roomKey!, room_type: roomType }
+              : scene,
+          ),
+        );
+      }
 
       const result = await createAndKickStageJob(tourId, active.id, {
         strategy,
         roomType,
+        roomKey: persist.roomKey ?? roomKey ?? undefined,
         intensity,
         note: note.trim().slice(0, 400),
       });
@@ -675,6 +825,33 @@ export function VirtualStagingPanel({
         </select>
       </div>
 
+      <div className="space-y-1.5">
+        <Label className="text-xs" htmlFor="staging-room-key">
+          Room
+        </Label>
+        <select
+          id="staging-room-key"
+          className="w-full rounded-md border border-foreground/10 bg-background px-2 py-1.5 text-[11px]"
+          value={roomKey ?? ""}
+          disabled={busy || !active}
+          onChange={(e) => handleRoomKeyChange(e.target.value)}
+        >
+          {!roomKey ? (
+            <option value="">Assign on save…</option>
+          ) : null}
+          {existingRoomKeys.map((key) => (
+            <option key={key} value={key}>
+              {labelRoomKey(key)}
+            </option>
+          ))}
+          <option value="__new__">+ New room of this type</option>
+        </select>
+        <p className="text-[10px] text-muted-foreground">
+          Scenes that share a Room get the same frozen furniture list. Two
+          bedrooms should be different rooms.
+        </p>
+      </div>
+
       <fieldset className="space-y-1">
         <Label className="text-xs">Intensity</Label>
         {(
@@ -754,6 +931,28 @@ export function VirtualStagingPanel({
           onClick={handleStageRoom}
         >
           Virtually stage this room
+        </Button>
+        <p className="text-[10px] text-muted-foreground">
+          Furniture in an adjacent room will match style and materials but not
+          exact position.
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={busy || !plan}
+          onClick={() => void handleStageAll()}
+        >
+          Stage all scenes
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={busy || !active}
+          onClick={handleRegenerateLayout}
+        >
+          Regenerate layout
         </Button>
         {intensity === "empty" ? (
           <p className="text-[10px] text-muted-foreground">

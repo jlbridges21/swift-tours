@@ -80,6 +80,8 @@ export async function analyzeRoomViews(options: {
     const result = await fal.subscribe(VISION_ENDPOINT, {
       input: {
         model: VISION_MODEL,
+        // fal-ai/any-llm/vision accepts temperature; seed is NOT supported.
+        temperature: 0,
         image_urls: options.imageUrls,
         prompt: `You are analyzing ${n} perspective photos of the SAME vacant room, in order (image 0 … image ${n - 1}). Each photo faces a different direction from the room center.
 For EACH image index return what is on that wall/direction and whether furniture can go there.

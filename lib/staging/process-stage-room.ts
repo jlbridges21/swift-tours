@@ -15,12 +15,19 @@ import {
 } from "@/lib/staging/projection";
 import { generateLayoutPlan } from "@/lib/staging/layout-plan";
 import {
+  collageAdjacentRoomInstruction,
   collageContinuityInstruction,
   composeViewStagingPrompt,
   piecesForView,
+  viewImageSeed,
   type StagingLayout,
   type StagingRoomAnalysis,
 } from "@/lib/staging/layout-shared";
+import {
+  findAdjacentRoomCollageRef,
+  loadCollageRightHalf,
+} from "@/lib/staging/cross-scene";
+import { ensureFrozenRoomDescription } from "@/lib/staging/generate-plan";
 import { getStagingProvider } from "@/lib/staging/providers";
 import { FAL_KONTEXT_COST_CENTS } from "@/lib/staging/providers/fal-kontext";
 import { analyzeRoomViews } from "@/lib/staging/room-analysis";
@@ -29,6 +36,7 @@ import {
   type StagingIntensity,
   type StagingPlan,
 } from "@/lib/staging/staging-plan-shared";
+import { nextRoomKey } from "@/lib/staging/room-identity";
 import {
   getViewStrategy,
   type ViewStrategyId,
@@ -176,7 +184,7 @@ export async function processStageRoomJob(job: {
   const { data: scene, error: sceneError } = await admin
     .from("scenes")
     .select(
-      "id, tour_id, storage_path, cleaned_path, cleaned_enabled, staged_path, staged_compat_path, staged_enabled, room_type, width, height, staging_room_analysis, staging_layout",
+      "id, tour_id, storage_path, cleaned_path, cleaned_enabled, staged_path, staged_compat_path, staged_enabled, room_type, room_key, width, height, staging_room_analysis, staging_layout",
     )
     .eq("id", job.scene_id)
     .maybeSingle();
@@ -194,7 +202,7 @@ export async function processStageRoomJob(job: {
   if (!tour) return failJob(job.id, "Tour not found.");
 
   const ownerId = tour.owner_id;
-  const plan = (tour.staging_plan ?? job.params.plan) as StagingPlan | null;
+  let plan = (tour.staging_plan ?? job.params.plan) as StagingPlan | null;
   if (!plan || typeof plan !== "object" || !plan.rooms) {
     return failJob(
       job.id,
@@ -217,9 +225,37 @@ export async function processStageRoomJob(job: {
         : 42;
   const sceneNote =
     typeof job.params.note === "string" ? job.params.note.trim() : "";
+  const regeneratePlan = job.params.regeneratePlan === true;
+
+  // Resolve room_key — prefer scene, then params, else derive.
+  let roomKey =
+    (typeof job.params.roomKey === "string" && job.params.roomKey) ||
+    scene.room_key ||
+    null;
+  if (!roomKey) {
+    const { data: siblings } = await admin
+      .from("scenes")
+      .select("room_key")
+      .eq("tour_id", job.tour_id)
+      .not("room_key", "is", null);
+    const existing = (siblings ?? [])
+      .map((s) => s.room_key)
+      .filter((k): k is string => typeof k === "string");
+    roomKey = nextRoomKey(roomType, existing);
+    await admin
+      .from("scenes")
+      .update({ room_key: roomKey, room_type: roomType })
+      .eq("id", scene.id);
+  }
+
+  plan = await ensureFrozenRoomDescription({ plan, roomKey, roomType });
+  await admin
+    .from("tours")
+    .update({ staging_plan: plan as unknown as Json })
+    .eq("id", job.tour_id);
 
   const roomDescription =
-    plan.rooms[roomType]?.trim() ||
+    plan.rooms[roomKey]?.trim() ||
     `tasteful furnishings appropriate for a ${roomType.replace(/_/g, " ")}`;
 
   const totalSteps = strategy.views.length + 1; // views + composite
@@ -234,66 +270,94 @@ export async function processStageRoomJob(job: {
   let layout = (job.params.layout ?? scene.staging_layout) as
     | StagingLayout
     | null;
+  let analysis = (job.params.analysis ?? scene.staging_room_analysis) as
+    | StagingRoomAnalysis
+    | null;
 
   // Bootstrap: analysis → layout → view rows (once).
   if (!job.total_steps) {
     try {
-      const sourcePath = resolveStagingInputPath(scene);
-      const { data: file, error: dlErr } = await admin.storage
-        .from("panoramas")
-        .download(sourcePath);
-      if (dlErr || !file) {
-        return failJob(job.id, dlErr?.message ?? "Failed to download panorama.");
-      }
-      const original = await decodeImageToRgba(
-        Buffer.from(await file.arrayBuffer()),
-      );
+      const storedAnalysis = scene.staging_room_analysis as StagingRoomAnalysis | null;
+      const storedLayout = scene.staging_layout as StagingLayout | null;
+      const canReuse =
+        !regeneratePlan &&
+        storedAnalysis &&
+        Array.isArray(storedAnalysis.views) &&
+        storedAnalysis.strategy === strategyId &&
+        storedLayout &&
+        Array.isArray(storedLayout.views) &&
+        storedLayout.strategy === strategyId;
 
-      const analysisUrls: string[] = [];
-      for (const v of strategy.views) {
-        const persp = equirectToPerspective(original, {
-          yaw: v.yaw,
-          pitch: v.pitch,
-          fov: v.fov,
-          width: Math.min(768, strategy.size),
-          height: Math.min(768, strategy.size),
+      if (canReuse) {
+        analysis = storedAnalysis;
+        layout = storedLayout;
+        console.info(
+          `[stage_room] reusing stored analysis+layout for scene ${scene.id} room_key=${roomKey} strategy=${strategyId} (pass regeneratePlan / --regenerate-plan to rebuild)`,
+        );
+      } else {
+        const sourcePath = resolveStagingInputPath(scene);
+        const { data: file, error: dlErr } = await admin.storage
+          .from("panoramas")
+          .download(sourcePath);
+        if (dlErr || !file) {
+          return failJob(
+            job.id,
+            dlErr?.message ?? "Failed to download panorama.",
+          );
+        }
+        const original = await decodeImageToRgba(
+          Buffer.from(await file.arrayBuffer()),
+        );
+
+        const analysisUrls: string[] = [];
+        for (const v of strategy.views) {
+          const persp = equirectToPerspective(original, {
+            yaw: v.yaw,
+            pitch: v.pitch,
+            fov: v.fov,
+            width: Math.min(768, strategy.size),
+            height: Math.min(768, strategy.size),
+          });
+          const jpeg = await encodeRgbaToJpeg(persp, 85);
+          const path = `${stagingWorkDir(ownerId, job.tour_id, job.id)}/analysis/${v.index}.jpg`;
+          await admin.storage.from("panoramas").upload(path, jpeg, {
+            contentType: "image/jpeg",
+            cacheControl: "60",
+            upsert: true,
+          });
+          analysisUrls.push(publicUrl(path));
+        }
+
+        analysis = await analyzeRoomViews({
+          strategy: strategyId,
+          imageUrls: analysisUrls,
         });
-        const jpeg = await encodeRgbaToJpeg(persp, 85);
-        const path = `${stagingWorkDir(ownerId, job.tour_id, job.id)}/analysis/${v.index}.jpg`;
-        await admin.storage.from("panoramas").upload(path, jpeg, {
-          contentType: "image/jpeg",
-          cacheControl: "60",
-          upsert: true,
+        layout = await generateLayoutPlan({
+          strategy: strategyId,
+          roomDescription,
+          analysis,
         });
-        analysisUrls.push(publicUrl(path));
+
+        await admin
+          .from("scenes")
+          .update({
+            staging_room_analysis: analysis as unknown as Json,
+            staging_layout: layout as unknown as Json,
+          })
+          .eq("id", scene.id);
+
+        console.info(
+          `[stage_room] generated analysis+layout for scene ${scene.id} room_key=${roomKey}`,
+        );
+        console.info(
+          "[stage_room] room analysis",
+          JSON.stringify(analysis, null, 2),
+        );
+        console.info(
+          "[stage_room] layout plan",
+          JSON.stringify(layout, null, 2),
+        );
       }
-
-      const analysis: StagingRoomAnalysis = await analyzeRoomViews({
-        strategy: strategyId,
-        imageUrls: analysisUrls,
-      });
-      layout = await generateLayoutPlan({
-        strategy: strategyId,
-        roomDescription,
-        analysis,
-      });
-
-      await admin
-        .from("scenes")
-        .update({
-          staging_room_analysis: analysis as unknown as Json,
-          staging_layout: layout as unknown as Json,
-        })
-        .eq("id", scene.id);
-
-      console.info(
-        "[stage_room] room analysis",
-        JSON.stringify(analysis, null, 2),
-      );
-      console.info(
-        "[stage_room] layout plan",
-        JSON.stringify(layout, null, 2),
-      );
 
       await admin
         .from("staging_jobs")
@@ -306,12 +370,15 @@ export async function processStageRoomJob(job: {
             ...withoutLease(job.params),
             strategy: strategyId,
             roomType,
+            roomKey,
             intensity,
             seed,
             sceneNote,
             layout,
             analysis,
             globalDescriptors: plan.global_descriptors,
+            roomDescription,
+            imageSeedFormula: "tourSeed + viewIndex * 17",
           } as Json,
         })
         .eq("id", job.id);
@@ -649,9 +716,12 @@ export async function processStageRoomJob(job: {
       );
     }
 
-    // Adjacent reference: prior succeeded (non-skipped) view as collage right half.
+    // Collage priority: (1) same-room prior view, (2) adjacent staged room via hotspot.
     let submitBuf = cropJpeg;
     let usedCollage = false;
+    let collageKind: "same_room" | "adjacent_room" | null = null;
+    let adjacentLabel = "";
+
     const prior = viewResults
       .filter((r) => r.status === "succeeded" && r.resultPath)
       .sort((a, b) => b.index - a.index)[0];
@@ -667,6 +737,43 @@ export async function processStageRoomJob(job: {
           strategy.size,
         );
         usedCollage = true;
+        collageKind = "same_room";
+      }
+    }
+
+    if (!usedCollage) {
+      try {
+        const adj = await findAdjacentRoomCollageRef({
+          tourId: job.tour_id,
+          sceneId: scene.id,
+          sceneRoomKey: roomKey,
+          viewYaw: viewSpec.yaw,
+          viewFov: viewSpec.fov,
+          strategyId,
+        });
+        if (adj) {
+          const rightBuf = await loadCollageRightHalf({
+            path: adj.imagePath,
+            preferViewResult: true,
+            returnYaw: adj.hotspotYaw + Math.PI,
+            strategyId,
+          });
+          if (rightBuf) {
+            submitBuf = await buildReferenceCollage(
+              cropJpeg,
+              rightBuf,
+              strategy.size,
+            );
+            usedCollage = true;
+            collageKind = "adjacent_room";
+            adjacentLabel = adj.targetRoomKey;
+            console.info(
+              `[stage_room] cross-scene collage view ${step} ← ${adj.targetSceneId} (${adj.targetRoomKey})`,
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("[stage_room] adjacent collage lookup failed", err);
       }
     }
 
@@ -686,16 +793,23 @@ export async function processStageRoomJob(job: {
     if (sceneNote) {
       stagedPrompt = `${stagedPrompt} Additional note for this room: ${sceneNote}`;
     }
-    if (usedCollage) {
+    if (collageKind === "same_room") {
       stagedPrompt = `${stagedPrompt}${collageContinuityInstruction()}`;
+    } else if (collageKind === "adjacent_room") {
+      stagedPrompt = `${stagedPrompt}${collageAdjacentRoomInstruction(adjacentLabel)}`;
     }
+
+    const imageSeed = viewImageSeed(seed, step);
+    console.info(
+      `[stage_room] view ${step} image seed=${imageSeed} (tourSeed=${seed} + ${step}*17)`,
+    );
 
     const submitted = await provider.submitInpaint({
       image: submitBuf,
       mask: Buffer.alloc(0),
       imageUrl,
       prompt: stagedPrompt,
-      seed: seed + step * 17,
+      seed: imageSeed,
       numImages: 1,
       aspectRatio: usedCollage ? "16:9" : "1:1",
     });

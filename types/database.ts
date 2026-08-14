@@ -3,9 +3,9 @@
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  *
- * After 0019_virtual_staging.sql / 0020_staging_layout.sql, regenerate so
- * room_type / staging_plan / staging_views / staging_room_analysis /
- * staging_layout / job step columns stay in sync.
+ * After 0019–0021 migrations, regenerate so room_type / room_key /
+ * staging_plan / staging_views / staging_room_analysis / staging_layout /
+ * job step columns stay in sync.
  *
  *   npx supabase gen types typescript --project-id zqzctlekmvunyhdxihvf > types/database.ts
  */
@@ -167,6 +167,7 @@ export type Database = {
           staged_compat_path: string | null;
           staged_enabled: boolean;
           room_type: string | null;
+          room_key: string | null;
           staging_candidate_path: string | null;
           staging_candidate_job_id: string | null;
           staging_room_analysis: Json | null;
@@ -203,6 +204,7 @@ export type Database = {
           staged_compat_path?: string | null;
           staged_enabled?: boolean;
           room_type?: string | null;
+          room_key?: string | null;
           staging_candidate_path?: string | null;
           staging_candidate_job_id?: string | null;
           staging_room_analysis?: Json | null;
@@ -239,6 +241,7 @@ export type Database = {
           staged_compat_path?: string | null;
           staged_enabled?: boolean;
           room_type?: string | null;
+          room_key?: string | null;
           staging_candidate_path?: string | null;
           staging_candidate_job_id?: string | null;
           staging_room_analysis?: Json | null;

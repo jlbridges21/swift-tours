@@ -39,6 +39,8 @@ export async function generateLayoutPlan(options: {
     const result = await fal.subscribe(LLM_ENDPOINT, {
       input: {
         model: LLM_MODEL,
+        // fal-ai/any-llm accepts temperature; seed is NOT supported.
+        temperature: 0,
         prompt: `You assign virtual-staging furniture to camera views of a vacant room.
 Frozen furniture list (use these pieces ONLY — you may lightly rephrase for placement but do not invent new items):
 ${pieces.map((p, i) => `${i + 1}. ${p}`).join("\n")}

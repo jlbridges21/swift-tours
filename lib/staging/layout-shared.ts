@@ -93,7 +93,7 @@ export function composeViewStagingPrompt(options: {
   );
 }
 
-/** Collage instruction appended when the right half is an adjacent staged view. */
+/** Same-room adjacent view (continuity within one room_key). */
 export function collageContinuityInstruction(): string {
   return (
     ` The image is a side-by-side pair of the SAME room: furnish ONLY the LEFT half. ` +
@@ -101,6 +101,54 @@ export function collageContinuityInstruction(): string {
     `Any furniture visible in the overlap already exists — do not duplicate it. ` +
     `Match materials, scale, and lighting of pieces that continue across the seam.`
   );
+}
+
+/** Adjacent different room (cross-scene via link hotspot). */
+export function collageAdjacentRoomInstruction(roomLabel: string): string {
+  const label = roomLabel.replace(/_/g, " ");
+  return (
+    ` The image is a side-by-side pair: furnish ONLY the LEFT half (this room). ` +
+    `The RIGHT half is the ADJACENT ROOM (${label}) as already staged. ` +
+    `Any furniture visible through the opening must match it in style, material, and colour. ` +
+    `Do not restage that room — only add this view's assigned pieces on the LEFT.`
+  );
+}
+
+/** Stable image seed for a view: tour seed + view index × 17. */
+export function viewImageSeed(tourSeed: number, viewIndex: number): number {
+  return tourSeed + viewIndex * 17;
+}
+
+/**
+ * Force-split helper for bake-off: redistribute pieces across ≥2 non-clear views.
+ */
+export function forceSplitLayout(layout: StagingLayout): StagingLayout {
+  const allPieces = layout.views.flatMap((v) => v.pieces);
+  if (allPieces.length < 2) return layout;
+
+  const targets = layout.views.filter((v) => {
+    // Prefer views that already had capacity in analysis — keep indices.
+    return true;
+  });
+  if (targets.length < 2) return layout;
+
+  const next = layout.views.map((v) => ({ index: v.index, pieces: [] as string[] }));
+  // Put first half on first view with any prior pieces or index 0; rest on next.
+  const usable = next.filter((_, i) => layout.views[i] !== undefined);
+  const a = usable[0]!;
+  const b = usable[1] ?? usable[0]!;
+  const mid = Math.ceil(allPieces.length / 2);
+  a.pieces = allPieces.slice(0, mid);
+  b.pieces = allPieces.slice(mid);
+  // Clear others
+  for (const v of next) {
+    if (v.index !== a.index && v.index !== b.index) v.pieces = [];
+  }
+  return {
+    ...layout,
+    views: next,
+    planned_at: new Date().toISOString(),
+  };
 }
 
 /**

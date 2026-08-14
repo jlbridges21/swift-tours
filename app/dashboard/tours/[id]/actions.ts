@@ -22,6 +22,8 @@ import {
 import { sortScenesByGroupOrder } from "@/lib/scene-groups";
 import { clampPlanCoord } from "@/lib/floor-plans";
 import { generateLockedStagingPlan } from "@/lib/staging/generate-plan";
+import { nextRoomKey, sanitizeRoomKey } from "@/lib/staging/room-identity";
+import type { StagingOrderEntry } from "@/lib/staging/cross-scene";
 import {
   ROOM_TYPES,
   STAGING_DENSITIES,
@@ -886,7 +888,7 @@ async function requireOwnedScene(sceneId: string) {
 
   const { data: scene, error } = await supabase
     .from("scenes")
-    .select("id, tour_id")
+    .select("id, tour_id, room_key, room_type")
     .eq("id", sceneId)
     .maybeSingle();
 
@@ -2313,10 +2315,14 @@ export async function updateSceneRoomStaging(
   sceneId: string,
   input: {
     roomType: RoomType;
+    /** Existing room_key to join, or omit to create a new key for this type. */
+    roomKey?: string | null;
+    /** When true, allocate a brand-new room_key for this roomType. */
+    createNewRoom?: boolean;
     intensity?: StagingIntensity;
     note?: string;
   },
-): Promise<SceneActionResult> {
+): Promise<SceneActionResult & { roomKey?: string; plan?: StagingPlan }> {
   const owned = await requireOwnedScene(sceneId);
   if (owned.error || !owned.scene || !owned.tour) {
     return { error: owned.error ?? "Unauthorized." };
@@ -2326,19 +2332,107 @@ export async function updateSceneRoomStaging(
     return { error: "Invalid room type." };
   }
 
-  // intensity / note are applied at job create via params; persist room_type only.
   void input.intensity;
   void input.note;
 
+  const { data: tourRow, error: tourErr } = await owned.supabase
+    .from("tours")
+    .select("staging_plan, staging_seed")
+    .eq("id", owned.scene.tour_id)
+    .maybeSingle();
+  if (tourErr) return { error: tourErr.message };
+
+  let plan = (tourRow?.staging_plan ?? null) as StagingPlan | null;
+
+  const { data: siblings } = await owned.supabase
+    .from("scenes")
+    .select("room_key")
+    .eq("tour_id", owned.scene.tour_id)
+    .not("room_key", "is", null);
+  const existingKeys = (siblings ?? [])
+    .map((s) => s.room_key)
+    .filter((k): k is string => typeof k === "string");
+
+  let roomKey: string;
+  if (input.createNewRoom) {
+    roomKey = nextRoomKey(input.roomType, existingKeys);
+  } else if (input.roomKey && sanitizeRoomKey(input.roomKey)) {
+    roomKey = sanitizeRoomKey(input.roomKey)!;
+  } else if (owned.scene.room_key) {
+    roomKey = owned.scene.room_key;
+  } else {
+    roomKey = nextRoomKey(input.roomType, existingKeys);
+  }
+
+  if (plan && typeof plan === "object") {
+    const { ensureFrozenRoomDescription } = await import(
+      "@/lib/staging/generate-plan"
+    );
+    // Normalize legacy plans missing room_types.
+    if (!plan.room_types) plan = { ...plan, room_types: {} };
+    plan = await ensureFrozenRoomDescription({
+      plan,
+      roomKey,
+      roomType: input.roomType,
+    });
+    const { error: planErr } = await owned.supabase
+      .from("tours")
+      .update({ staging_plan: plan as unknown as Json })
+      .eq("id", owned.scene.tour_id);
+    if (planErr) return { error: planErr.message };
+  }
+
   const { error } = await owned.supabase
     .from("scenes")
-    .update({ room_type: input.roomType })
+    .update({ room_type: input.roomType, room_key: roomKey })
     .eq("id", sceneId);
 
   if (error) return { error: error.message };
 
   revalidateTourCaches(owned.scene.tour_id, owned.tour.slug);
+  return { roomKey, plan: plan ?? undefined };
+}
+
+/** Clear stored analysis/layout so the next stage job regenerates them. */
+export async function regenerateSceneStagingLayout(
+  sceneId: string,
+): Promise<SceneActionResult> {
+  const owned = await requireOwnedScene(sceneId);
+  if (owned.error || !owned.scene || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+
+  const { error } = await owned.supabase
+    .from("scenes")
+    .update({
+      staging_room_analysis: null,
+      staging_layout: null,
+    })
+    .eq("id", sceneId);
+  if (error) return { error: error.message };
+
+  revalidateTourCaches(owned.scene.tour_id, owned.tour.slug);
   return {};
+}
+
+export async function getTourStagingOrder(
+  tourId: string,
+): Promise<{ order?: StagingOrderEntry[]; error?: string }> {
+  const owned = await requireOwnedTour(tourId);
+  if (owned.error || !owned.tour) {
+    return { error: owned.error ?? "Unauthorized." };
+  }
+  try {
+    const { computeTourStagingOrder } = await import(
+      "@/lib/staging/cross-scene"
+    );
+    const order = await computeTourStagingOrder(tourId);
+    return { order };
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : "Failed to compute order.",
+    };
+  }
 }
 
 /**

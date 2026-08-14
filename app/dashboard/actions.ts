@@ -866,6 +866,7 @@ export async function duplicateTour(id: string): Promise<ActionResult> {
           staged_compat_path: scene.staged_compat_path,
           staged_enabled: scene.staged_enabled,
           room_type: scene.room_type,
+          room_key: scene.room_key,
           staging_candidate_path: null,
           staging_candidate_job_id: null,
           adjust_brightness: scene.adjust_brightness,

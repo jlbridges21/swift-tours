@@ -3,10 +3,12 @@
  *
  *   npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts
  *   npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts --plan-only
+ *   npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts --regenerate-plan
+ *   npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts --force-split
  *   STRATEGY=A npx tsx --env-file=.env.local scripts/virtual-staging-bakeoff.ts
  *
- * Defaults to strategy C. Set STRATEGY=A|B to compare. D is dropped.
- * Prints room analysis + layout plan before any Kontext spend.
+ * Defaults to strategy C. Reuses scenes.staging_room_analysis + staging_layout when present
+ * unless --regenerate-plan. --force-split redistributes pieces across ≥2 views.
  */
 import Module from "node:module";
 
@@ -23,9 +25,12 @@ process.env.STAGING_ENABLED = "true";
 
 /** Vacant living room (hardwood) — tour 3c477cd2… */
 const DEFAULT_SCENE_ID = "2d4bb9fe-4a36-47e7-913b-cfab20550755";
+const DEFAULT_ROOM_KEY = "living_room_1";
 
 async function main() {
   const planOnly = process.argv.includes("--plan-only");
+  const regeneratePlan = process.argv.includes("--regenerate-plan");
+  const forceSplit = process.argv.includes("--force-split");
   const { createClient } = await import("@supabase/supabase-js");
   const sharp = (await import("sharp")).default;
 
@@ -53,10 +58,16 @@ async function main() {
   const {
     collageContinuityInstruction,
     composeViewStagingPrompt,
+    forceSplitLayout,
     piecesForView,
+    viewImageSeed,
   } = await import("../lib/staging/layout-shared");
+  type StagingLayout = import("../lib/staging/layout-shared").StagingLayout;
+  type StagingRoomAnalysis =
+    import("../lib/staging/layout-shared").StagingRoomAnalysis;
   const { analyzeRoomViews } = await import("../lib/staging/room-analysis");
   const { generateLayoutPlan } = await import("../lib/staging/layout-plan");
+  const { computeTourStagingOrder } = await import("../lib/staging/cross-scene");
   const { getViewStrategy } = await import("../lib/staging/view-strategies");
   type ViewStrategyId = import("../lib/staging/view-strategies").ViewStrategyId;
   const { publicUrl } = await import("../lib/storage");
@@ -68,6 +79,13 @@ async function main() {
       : envStrategy === "A" || envStrategy === "B" || envStrategy === "C"
         ? [envStrategy]
         : ["C"];
+
+  console.log("Flags:", {
+    planOnly,
+    regeneratePlan,
+    forceSplit,
+    strategies: strategyIds,
+  });
 
   const QUESTIONNAIRE: StagingQuestionnaire = {
     style: "Transitional",
@@ -119,34 +137,58 @@ async function main() {
 
   const { data: scene, error: sceneErr } = await sb
     .from("scenes")
-    .select("id, name, storage_path, tour_id, width, height")
+    .select(
+      "id, name, storage_path, tour_id, width, height, room_key, room_type, staging_room_analysis, staging_layout",
+    )
     .eq("id", sceneId)
     .maybeSingle();
   if (sceneErr || !scene) throw new Error(sceneErr?.message ?? "Scene missing");
 
   const { data: tour } = await sb
     .from("tours")
-    .select("id, owner_id, title")
+    .select("id, owner_id, title, staging_seed")
     .eq("id", scene.tour_id)
     .maybeSingle();
   if (!tour) throw new Error("Tour missing");
 
-  const seed = 481923;
+  const seed =
+    typeof tour.staging_seed === "number" ? tour.staging_seed : 481923;
+  const roomKey = scene.room_key || DEFAULT_ROOM_KEY;
   const plan = buildFallbackStagingPlan(QUESTIONNAIRE, seed);
-  plan.rooms.living_room =
-    "a charcoal three-seat linen sofa, two cream armchairs, a natural jute area rug, a walnut coffee table with brass legs, a large abstract canvas in sage and cream above the sofa, a tall fiddle-leaf fig in a woven basket";
+  plan.rooms = {
+    [roomKey]:
+      "a charcoal three-seat linen sofa, two cream armchairs, a natural jute area rug, a walnut coffee table with brass legs, a large abstract canvas in sage and cream above the sofa, a tall fiddle-leaf fig in a woven basket",
+  };
+  plan.room_types = { [roomKey]: "living_room" };
   plan.global_descriptors =
     "warm oak flooring tones, brushed brass hardware, matte black accents, cream and sage textiles";
   plan.palette = "warm neutrals with muted sage accents";
   plan.style = "transitional";
 
-  const roomDescription = plan.rooms.living_room!;
+  const roomDescription = plan.rooms[roomKey]!;
 
   console.log("\nScene:", scene.name, scene.id);
   console.log("Tour:", tour.title, tour.id);
+  console.log("room_key:", roomKey);
+  console.log("tour seed:", seed, "→ view seeds:", [0, 1, 2].map((i) => viewImageSeed(seed, i)).join(", "));
   console.log("Run:", runId);
   console.log("Strategies:", strategyIds.join(", "));
   console.log("Room description:", roomDescription);
+
+  try {
+    const order = await computeTourStagingOrder(scene.tour_id);
+    console.log("\n========== TOUR STAGING ORDER ==========");
+    for (let i = 0; i < order.length; i++) {
+      const e = order[i]!;
+      console.log(
+        `${i + 1}. ${e.name} — ${e.outboundLinks} outbound links` +
+          (e.alreadyStaged ? " [already staged]" : "") +
+          (e.roomKey ? ` room_key=${e.roomKey}` : ""),
+      );
+    }
+  } catch (err) {
+    console.warn("Could not compute staging order (migration pending?):", err);
+  }
 
   const { data: file, error: dlErr } = await sb.storage
     .from("panoramas")
@@ -185,35 +227,81 @@ async function main() {
     const strategy = getViewStrategy(strategyId);
     console.log(`\n── Strategy ${strategyId}: ${strategy.name} ──`);
 
-    // Analysis crops
-    const analysisUrls: string[] = [];
-    for (const v of strategy.views) {
-      const persp = equirectToPerspective(original, {
-        yaw: v.yaw,
-        pitch: v.pitch,
-        fov: v.fov,
-        width: Math.min(768, strategy.size),
-        height: Math.min(768, strategy.size),
-      });
-      const jpeg = await encodeRgbaToJpeg(persp, 85);
-      const up = await upload(
-        `${strategyId}/analysis-${v.index}.jpg`,
-        jpeg,
-        "image/jpeg",
+    const storedAnalysis = scene.staging_room_analysis as StagingRoomAnalysis | null;
+    const storedLayout = scene.staging_layout as StagingLayout | null;
+    const canReuse =
+      !regeneratePlan &&
+      storedAnalysis &&
+      Array.isArray(storedAnalysis.views) &&
+      storedAnalysis.strategy === strategyId &&
+      storedLayout &&
+      Array.isArray(storedLayout.views) &&
+      storedLayout.strategy === strategyId;
+
+    let analysis: StagingRoomAnalysis;
+    let layout: StagingLayout;
+
+    if (canReuse) {
+      analysis = storedAnalysis;
+      layout = storedLayout;
+      console.info(
+        `[bakeoff] reusing stored analysis+layout for scene ${scene.id} room_key=${roomKey} strategy=${strategyId} (pass --regenerate-plan to rebuild)`,
       );
-      analysisUrls.push(up.url);
+    } else {
+      const analysisUrls: string[] = [];
+      for (const v of strategy.views) {
+        const persp = equirectToPerspective(original, {
+          yaw: v.yaw,
+          pitch: v.pitch,
+          fov: v.fov,
+          width: Math.min(768, strategy.size),
+          height: Math.min(768, strategy.size),
+        });
+        const jpeg = await encodeRgbaToJpeg(persp, 85);
+        const up = await upload(
+          `${strategyId}/analysis-${v.index}.jpg`,
+          jpeg,
+          "image/jpeg",
+        );
+        analysisUrls.push(up.url);
+      }
+
+      analysis = await analyzeRoomViews({
+        strategy: strategyId,
+        imageUrls: analysisUrls,
+      });
+      layout = await generateLayoutPlan({
+        strategy: strategyId,
+        roomDescription,
+        analysis,
+      });
+
+      // Persist so a second run reuses without regenerating.
+      const { error: persistErr } = await sb
+        .from("scenes")
+        .update({
+          staging_room_analysis: analysis,
+          staging_layout: layout,
+          room_key: roomKey,
+          room_type: "living_room",
+        })
+        .eq("id", scene.id);
+      if (persistErr) {
+        console.warn(
+          "[bakeoff] could not persist analysis/layout (apply migration 0020/0021?):",
+          persistErr.message,
+        );
+      } else {
+        console.info(
+          `[bakeoff] generated+stored analysis+layout for scene ${scene.id}`,
+        );
+      }
     }
 
-    const analysis = await analyzeRoomViews({
-      strategy: strategyId,
-      imageUrls: analysisUrls,
-    });
-    const layout = await generateLayoutPlan({
-      strategy: strategyId,
-      roomDescription,
-      analysis,
-    });
-
+    if (forceSplit) {
+      layout = forceSplitLayout(layout);
+      console.info("[bakeoff] --force-split applied:", JSON.stringify(layout.views));
+    }
     console.log("\n========== ROOM ANALYSIS ==========");
     console.log(JSON.stringify(analysis, null, 2));
     console.log("\n========== LAYOUT PLAN ==========");
@@ -318,10 +406,13 @@ async function main() {
           mask: Buffer.alloc(0),
           imageUrl,
           prompt: stagedPrompt,
-          seed: seed + view.index * 17,
+          seed: viewImageSeed(seed, view.index),
           numImages: 1,
           aspectRatio: usedCollage ? "16:9" : "1:1",
         });
+        console.log(
+          `  image seed=${viewImageSeed(seed, view.index)} (tourSeed + viewIndex*17)`,
+        );
 
         let resultBuf: Buffer | null = null;
         for (let i = 0; i < 90; i++) {
