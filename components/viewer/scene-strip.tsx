@@ -35,10 +35,20 @@ export function SceneStrip({
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   useEffect(() => {
-    activeRef.current?.scrollIntoView({
+    const list = listRef.current;
+    const item = activeRef.current;
+    if (!list || !item) return;
+
+    // Scroll the strip container itself — never scrollIntoView(). That API walks
+    // every scrollable ancestor, and inside an /embed iframe the chain continues
+    // into the host document, scrolling the embedding page to the iframe on mount.
+    // scrollTo on this element cannot reach ancestors or the parent frame.
+    list.scrollTo({
+      left:
+        item.offsetLeft -
+        list.offsetLeft -
+        (list.clientWidth - item.offsetWidth) / 2,
       behavior: reduceMotion ? "auto" : "smooth",
-      inline: "center",
-      block: "nearest",
     });
   }, [currentSceneId, reduceMotion]);
 

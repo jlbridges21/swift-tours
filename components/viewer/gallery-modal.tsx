@@ -44,7 +44,13 @@ export function GalleryModal({
 
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => closeRef.current?.focus(), 0);
+    // preventScroll is required: a plain focus() inside the /embed iframe makes
+    // the host page scroll the iframe into view. `initialFocus={false}` on the
+    // popup below suppresses Base UI's own un-guarded initial focus.
+    const id = window.setTimeout(
+      () => closeRef.current?.focus({ preventScroll: true }),
+      0,
+    );
     return () => window.clearTimeout(id);
   }, [open]);
 
@@ -103,6 +109,7 @@ export function GalleryModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        initialFocus={false}
         showCloseButton={false}
         className="flex h-dvh max-h-dvh w-full max-w-none flex-col gap-0 rounded-none border-0 bg-black p-0 text-white max-[639px]:rounded-none sm:h-auto sm:max-h-[90vh] sm:max-w-4xl sm:rounded-xl sm:ring-1 sm:ring-white/15"
       >
